@@ -400,7 +400,7 @@ class GTADatasetEval(Dataset):
             if query_mode == 'D2S':
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
-                    self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
+                    self.images_path.append(os.path.join(sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
 
                     sate_img_name = sate_img.replace('.png', '')
@@ -417,7 +417,7 @@ class GTADatasetEval(Dataset):
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
                     if sate_img not in pairs_sate2drone_dict.keys():
                         continue
-                    self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
+                    self.images_path.append(os.path.join(sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
 
                     sate_img_name = sate_img.replace('.png', '')

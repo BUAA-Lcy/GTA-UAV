@@ -72,7 +72,7 @@ def eval_script(config):
 
 
     model = DesModel(config.model,
-                    pretrained=True,
+                    pretrained=False,
                     img_size=config.img_size,
                     share_weights=config.share_weights)
                           
