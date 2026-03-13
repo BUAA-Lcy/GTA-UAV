@@ -131,6 +131,8 @@ def evaluate(
         top10_log=False,
         with_match=False,
         logger=None,
+        wandb_run=None,
+        epoch=None,
     ):
 
     if logger is not None:
@@ -278,6 +280,25 @@ def evaluate(
         )
     else:
         print(result_str)
+
+    if wandb_run is not None:
+        eval_log = {
+            "eval/recall@1": float(cmc[0] * 100),
+            "eval/mAP": float(mAP * 100),
+            "time/eval/query_extract_s": query_extract_time,
+            "time/eval/gallery_infer_s": gallery_infer_time,
+            "time/eval/score_concat_s": score_concat_time,
+            "time/eval/metrics_s": metrics_time,
+            "eval/query_num": int(query_num),
+            "eval/gallery_num": int(len(gallery_list)),
+        }
+        if len(cmc) > 4:
+            eval_log["eval/recall@5"] = float(cmc[4] * 100)
+        if len(cmc) > 9:
+            eval_log["eval/recall@10"] = float(cmc[9] * 100)
+        if epoch is not None:
+            eval_log["eval/epoch"] = int(epoch)
+        wandb_run.log(eval_log)
     
     # cleanup and free memory on GPU
     if cleanup:

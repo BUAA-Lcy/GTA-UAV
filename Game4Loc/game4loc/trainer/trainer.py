@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from ..utils import AverageMeter
 
 
-def train_with_weight(train_config, model, dataloader, loss_function, optimizer, scheduler=None, scaler=None, recon_weight=0.1, loss_recon=None, train_with_recon=False, with_weight=False, logger=None):
+def train_with_weight(train_config, model, dataloader, loss_function, optimizer, scheduler=None, scaler=None, recon_weight=0.1, loss_recon=None, train_with_recon=False, with_weight=False, logger=None, wandb_run=None, epoch=None):
 
     # set model train mode
     model.train()
@@ -187,6 +187,16 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
                     "训练步=%d/%d 单步耗时=%.4fs 预计剩余=%.2fs loss=%.4f lr=%.6f",
                     step, total_step, iter_time, eta, loss_total.item(), optimizer.param_groups[0]['lr']
                 )
+            if wandb_run is not None:
+                log_data = {
+                    "train/step_loss": loss_total.item(),
+                    "train/lr": optimizer.param_groups[0]['lr'],
+                    "train/iter_time_s": iter_time,
+                    "train/eta_s": eta,
+                }
+                if epoch is not None:
+                    log_data["train/epoch"] = epoch
+                wandb_run.log(log_data)
         
         step += 1
 
@@ -201,6 +211,16 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
             stage_meter["backward_optim"],
             total_step,
         )
+    if wandb_run is not None:
+        epoch_log = {
+            "time/train/to_device_s": stage_meter["to_device"],
+            "time/train/forward_loss_s": stage_meter["forward_loss"],
+            "time/train/backward_optim_s": stage_meter["backward_optim"],
+            "train/epoch_avg_loss": losses.avg,
+        }
+        if epoch is not None:
+            epoch_log["train/epoch"] = epoch
+        wandb_run.log(epoch_log)
 
     return losses.avg
 

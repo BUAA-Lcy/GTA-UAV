@@ -18,3 +18,4 @@ einops
 yacs
 omegaconf
 peft
+wandb

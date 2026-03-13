@@ -3,6 +3,7 @@ import time
 import math
 import shutil
 import logging
+import atexit
 import torch
 import argparse
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from transformers import get_constant_schedule_with_warmup, get_polynomial_decay
 from game4loc.dataset.gta import GTADatasetEval, GTADatasetTrain, get_transforms
 from game4loc.utils import setup_system
 from game4loc.logger_utils import setup_logger, log_config, log_timer
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 from game4loc.trainer.trainer import train, train_with_weight
 from game4loc.evaluate.gta import evaluate
 from game4loc.loss import InfoNCE, WeightedInfoNCE, GroupInfoNCE, TripletLoss
@@ -98,6 +100,7 @@ class Configuration:
     
     # Savepath for model checkpoints
     model_path: str = "./work_dir/gta"
+    use_wandb: bool = True
 
     query_mode: str = "D2S"               # Retrieval in Drone to Satellite
 
@@ -135,6 +138,7 @@ class Configuration:
 
 def train_script(config):
     logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG)
+    wandb_run = None
 
     save_time = "{}".format(time.strftime("%m%d%H%M%S"))
     model_path = "{}/{}/{}".format(config.model_path,
@@ -152,13 +156,32 @@ def train_script(config):
     logger.info("自动日志路径: %s", log_path)
     logger.info("训练起始检查点: %s", config.checkpoint_start)
     log_config(logger, config)
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, logger=logger)
+        # 演示核心超参数写入 wandb.config
+        wandb_run.config.update(
+            {
+                "learning_rate": config.lr,
+                "batch_size": config.batch_size,
+            },
+            allow_val_change=True,
+        )
+        atexit.register(finish_wandb, wandb_run, logger)
+        safe_log(
+            wandb_run,
+            {
+                "meta/log_path": log_path,
+                "meta/model_path": model_path,
+            },
+        )
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
     #-----------------------------------------------------------------------------#
     logger.info("模型: %s", config.model)
 
-    with log_timer(logger, "model_initialization", level=logging.INFO, sync_cuda=True):
+    with log_timer(logger, "model_initialization", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("model_initialization", logger=logger, run=wandb_run, sync_cuda=True):
         if config.with_netvlad:
             model = DesModelWithVLAD(model_name=config.model,
                         pretrained=True,
@@ -183,7 +206,7 @@ def train_script(config):
     # Load pretrained Checkpoint    
     if config.checkpoint_start is not None:  
         with log_timer(logger, "load_checkpoint", level=logging.INFO, sync_cuda=True):
-            logger.info("Load checkpoint: %s", config.checkpoint_start)
+            logger.info("加载检查点: %s", config.checkpoint_start)
             model_state_dict = torch.load(config.checkpoint_start)
             model.load_state_dict(model_state_dict, strict=False)
 
@@ -211,7 +234,8 @@ def train_script(config):
     # DataLoader                                                                  #
     #-----------------------------------------------------------------------------#
 
-    with log_timer(logger, "data_loading", level=logging.INFO):
+    with log_timer(logger, "data_loading", level=logging.INFO), \
+         WandbStepTimer("data_loading", logger=logger, run=wandb_run):
         if 'cross-area' in config.train_pairs_meta_file:
             sat_rot = True
         else:
@@ -359,7 +383,8 @@ def train_script(config):
     #-----------------------------------------------------------------------------#
     if config.zero_shot:
         logger.info("%s[Zero Shot]%s", 30*"-", 30*"-")
-        with log_timer(logger, "zero_shot_evaluation", level=logging.INFO, sync_cuda=True):
+        with log_timer(logger, "zero_shot_evaluation", level=logging.INFO, sync_cuda=True), \
+             WandbStepTimer("zero_shot_evaluation", logger=logger, run=wandb_run, sync_cuda=True):
             r1_test = evaluate(config=config,
                                model=model,
                                query_loader=query_dataloader_test,
@@ -373,7 +398,9 @@ def train_script(config):
                                gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
                                step_size=1000,
                                cleanup=True,
-                               logger=logger)
+                               logger=logger,
+                               wandb_run=wandb_run,
+                               epoch=0)
            
             
     #-----------------------------------------------------------------------------#
@@ -389,7 +416,8 @@ def train_script(config):
 
         if config.custom_sampling:
             train_dataloader.dataset.shuffle()
-        with log_timer(logger, f"train_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+        with log_timer(logger, f"train_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
+             WandbStepTimer(f"train_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
             train_loss = train_with_weight(config,
                                model,
                                dataloader=train_dataloader,
@@ -398,16 +426,27 @@ def train_script(config):
                                scheduler=scheduler,
                                scaler=scaler,
                                with_weight=config.with_weight,
-                               logger=logger)
+                               logger=logger,
+                               wandb_run=wandb_run,
+                               epoch=epoch)
 
             logger.info("第 %s 轮: 训练损失 = %.3f, 学习率 = %.6f", epoch,
                     train_loss, optimizer.param_groups[0]['lr'])
+            safe_log(
+                wandb_run,
+                {
+                    "train/loss": train_loss,
+                    "train/lr": optimizer.param_groups[0]['lr'],
+                },
+                step=epoch,
+            )
         
         # evaluate
         if (epoch % config.eval_every_n_epoch == 0 and epoch != 0) or epoch == config.epochs:
         
             logger.info("%s[Evaluate]%s", 30*"-", 30*"-")
-            with log_timer(logger, f"evaluate_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+            with log_timer(logger, f"evaluate_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
+                 WandbStepTimer(f"evaluate_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
                 r1_test = evaluate(config=config,
                                     model=model,
                                     query_loader=query_dataloader_test,
@@ -421,25 +460,44 @@ def train_script(config):
                                     gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
                                     step_size=1000,
                                     cleanup=True,
-                                    logger=logger)
+                                    logger=logger,
+                                    wandb_run=wandb_run,
+                                    epoch=epoch)
                 
             if r1_test > best_score or epoch == config.epochs:
 
                 best_score = r1_test
+                safe_log(
+                    wandb_run,
+                    {
+                        "eval/best_recall@1": best_score * 100,
+                    },
+                    step=epoch,
+                )
 
-                with log_timer(logger, f"save_checkpoint_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+                with log_timer(logger, f"save_checkpoint_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
+                     WandbStepTimer(f"save_checkpoint_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
                     if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
                         torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
                     else:
                         torch.save(model.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
                 
-    with log_timer(logger, "save_final_checkpoint", level=logging.INFO, sync_cuda=True):
+    with log_timer(logger, "save_final_checkpoint", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("save_final_checkpoint", logger=logger, run=wandb_run, sync_cuda=True):
         if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
             torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
         else:
             torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))
 
     logger.info("训练完成，最佳 Recall@1=%.4f", best_score)
+    safe_log(
+        wandb_run,
+        {
+            "final/best_recall@1": best_score * 100,
+        },
+        step=config.epochs,
+    )
+    finish_wandb(wandb_run, logger=logger)
 
 
 def parse_args():
@@ -500,6 +558,7 @@ def parse_args():
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
+    parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
 
     args = parser.parse_args()
     return args
@@ -537,5 +596,6 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.train_ratio = args.train_ratio
+    config.use_wandb = not(args.no_wandb)
 
     train_script(config)
