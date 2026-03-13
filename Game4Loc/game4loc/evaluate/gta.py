@@ -130,14 +130,21 @@ def evaluate(
         plot_acc_threshold=False,
         top10_log=False,
         with_match=False,
+        logger=None,
     ):
 
-    print("Extract Features and Compute Scores:")
+    if logger is not None:
+        logger.info("开始提取特征并计算相似度分数")
+    else:
+        print("Extract Features and Compute Scores:")
     model.eval()
+    t_query = time.perf_counter()
     img_features_query = predict(config, model, query_loader)
+    query_extract_time = time.perf_counter() - t_query
     # img_features_gallery = predict(config, model, gallery_loader)
 
     all_scores = []
+    t_gallery = time.perf_counter()
     with torch.no_grad():
         for gallery_batch in gallery_loader:
             with autocast():
@@ -148,8 +155,11 @@ def evaluate(
 
             scores_batch = img_features_query @ gallery_features_batch.T
             all_scores.append(scores_batch.cpu())
+    gallery_infer_time = time.perf_counter() - t_gallery
     
+    t_concat = time.perf_counter()
     all_scores = torch.cat(all_scores, dim=1).numpy()
+    score_concat_time = time.perf_counter() - t_concat
 
     # with image match for finer loc
     if with_match:
@@ -185,6 +195,7 @@ def evaluate(
     dis_ori_list = []
     dis_match_list = []
 
+    t_metrics = time.perf_counter()
     for i in tqdm(range(query_num), desc="Processing each query"):
         score = all_scores[i]    
         # predict index
@@ -230,6 +241,7 @@ def evaluate(
         if len(match_rank) > 0:
             cmc[match_rank[0]:] += 1
     
+    metrics_time = time.perf_counter() - t_metrics
     mAP = np.mean(all_ap)
     cmc = cmc / query_num
 
@@ -252,7 +264,20 @@ def evaluate(
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
 
-    print(' - '.join(string)) 
+    result_str = ' - '.join(string)
+    if logger is not None:
+        logger.info(result_str)
+        logger.debug(
+            "评估耗时统计 查询特征提取=%.6fs 图库推理=%.6fs 分数拼接=%.6fs 指标计算=%.6fs 查询数=%d 图库数=%d",
+            query_extract_time,
+            gallery_infer_time,
+            score_concat_time,
+            metrics_time,
+            query_num,
+            len(gallery_list),
+        )
+    else:
+        print(result_str)
     
     # cleanup and free memory on GPU
     if cleanup:

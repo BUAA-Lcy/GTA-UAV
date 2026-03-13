@@ -2,7 +2,7 @@ import os
 import time
 import math
 import shutil
-import sys
+import logging
 import torch
 import argparse
 from dataclasses import dataclass
@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader
 from transformers import get_constant_schedule_with_warmup, get_polynomial_decay_schedule_with_warmup, get_cosine_schedule_with_warmup
 
 from game4loc.dataset.gta import GTADatasetEval, GTADatasetTrain, get_transforms
-from game4loc.utils import setup_system, Logger
+from game4loc.utils import setup_system
+from game4loc.logger_utils import setup_logger, log_config, log_timer
 from game4loc.trainer.trainer import train, train_with_weight
 from game4loc.evaluate.gta import evaluate
 from game4loc.loss import InfoNCE, WeightedInfoNCE, GroupInfoNCE, TripletLoss
@@ -133,10 +134,7 @@ class Configuration:
 #-----------------------------------------------------------------------------#
 
 def train_script(config):
-
-    if config.log_to_file:
-        f = open(config.log_path, 'w')
-        sys.stdout = f
+    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG)
 
     save_time = "{}".format(time.strftime("%m%d%H%M%S"))
     model_path = "{}/{}/{}".format(config.model_path,
@@ -147,35 +145,33 @@ def train_script(config):
         os.makedirs(model_path)
     shutil.copyfile(os.path.basename(__file__), "{}/train.py".format(model_path))
 
-    # Redirect print to both console and log file
-    sys.stdout = Logger(os.path.join(model_path, 'log.txt'))
-
     setup_system(seed=config.seed,
                  cudnn_benchmark=config.cudnn_benchmark,
                  cudnn_deterministic=config.cudnn_deterministic)
-    
-    print("training save in path: {}".format(model_path))
-
-    print("training start from", config.checkpoint_start)
+    logger.info("训练输出目录: %s", model_path)
+    logger.info("自动日志路径: %s", log_path)
+    logger.info("训练起始检查点: %s", config.checkpoint_start)
+    log_config(logger, config)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
     #-----------------------------------------------------------------------------#
-    print("\nModel: {}".format(config.model))
+    logger.info("模型: %s", config.model)
 
-    if config.with_netvlad:
-        model = DesModelWithVLAD(model_name=config.model, 
-                    pretrained=True,
-                    img_size=config.img_size,
-                    share_weights=config.share_weights)
-    else:
-        model = DesModel(model_name=config.model, 
+    with log_timer(logger, "model_initialization", level=logging.INFO, sync_cuda=True):
+        if config.with_netvlad:
+            model = DesModelWithVLAD(model_name=config.model,
                         pretrained=True,
                         img_size=config.img_size,
                         share_weights=config.share_weights)
+        else:
+            model = DesModel(model_name=config.model,
+                            pretrained=True,
+                            img_size=config.img_size,
+                            share_weights=config.share_weights)
                         
     data_config = model.get_config()
-    print(data_config)
+    logger.debug("Model data config: %s", data_config)
     mean = data_config["mean"]
     std = data_config["std"]
     img_size = (config.img_size, config.img_size)
@@ -186,111 +182,109 @@ def train_script(config):
     
     # Load pretrained Checkpoint    
     if config.checkpoint_start is not None:  
-        print("Start from:", config.checkpoint_start)
-        model_state_dict = torch.load(config.checkpoint_start)  
-        model.load_state_dict(model_state_dict, strict=False)     
+        with log_timer(logger, "load_checkpoint", level=logging.INFO, sync_cuda=True):
+            logger.info("Load checkpoint: %s", config.checkpoint_start)
+            model_state_dict = torch.load(config.checkpoint_start)
+            model.load_state_dict(model_state_dict, strict=False)
 
-    print("Freeze model layers:", config.freeze_layers, config.frozen_stages)
+    logger.info("是否冻结模型层: %s, 冻结阶段: %s", config.freeze_layers, config.frozen_stages)
     if config.freeze_layers:
         model.freeze_layers(config.frozen_stages)
 
     # Data parallel
-    print("GPUs available:", torch.cuda.device_count())  
+    logger.info("可用 GPU 数量: %s", torch.cuda.device_count())
     if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=config.gpu_ids)
             
     # Model to device   
     model = model.to(config.device)
 
-    print("\nImage Size Query:", img_size)
-    print("Image Size Ground:", img_size)
-    print("Mean: {}".format(mean))
-    print("Std:  {}\n".format(std)) 
+    logger.info("查询图像尺寸: %s", img_size)
+    logger.info("图库图像尺寸: %s", img_size)
+    logger.info("归一化均值 Mean: %s", mean)
+    logger.info("归一化方差 Std: %s", std)
 
-    print("Use custom sampling: {}".format(config.custom_sampling))
+    logger.info("是否使用自定义采样: %s", config.custom_sampling)
 
 
     #-----------------------------------------------------------------------------#
     # DataLoader                                                                  #
     #-----------------------------------------------------------------------------#
 
-    # Transforms
-    if 'cross-area' in config.train_pairs_meta_file:
-        sat_rot = True
-    else:
-        sat_rot = False
-    val_transforms, train_sat_transforms, train_drone_transforms = \
-        get_transforms(img_size, mean=mean, std=std, sat_rot=sat_rot)
-                                                                                                                
-    # Train
-    train_dataset = GTADatasetTrain(data_root=config.data_root,
-                                    pairs_meta_file=config.train_pairs_meta_file,
-                                    transforms_query=train_drone_transforms,
-                                    transforms_gallery=train_sat_transforms,
-                                    group_len=config.group_len,
-                                    prob_flip=config.prob_flip,
-                                    shuffle_batch_size=config.batch_size,
-                                    mode=config.train_mode,
-                                    train_ratio=config.train_ratio,
-                                    )
-    
-    train_dataloader = DataLoader(train_dataset,
-                                  batch_size=config.batch_size,
-                                  num_workers=config.num_workers,
-                                  shuffle=not config.custom_sampling,
-                                  pin_memory=True)
-    
-    # Test query
-    if config.query_mode == 'D2S':
-        query_view = 'drone'
-        gallery_view = 'sate'
-    else:
-        query_view = 'sate'
-        gallery_view = 'drone'
-    query_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                        pairs_meta_file=config.test_pairs_meta_file,
-                                        view=query_view,
-                                        transforms=val_transforms,
-                                        mode=config.test_mode,
-                                        sate_img_dir=config.sate_img_dir,
-                                        query_mode=config.query_mode,
+    with log_timer(logger, "data_loading", level=logging.INFO):
+        if 'cross-area' in config.train_pairs_meta_file:
+            sat_rot = True
+        else:
+            sat_rot = False
+        val_transforms, train_sat_transforms, train_drone_transforms = \
+            get_transforms(img_size, mean=mean, std=std, sat_rot=sat_rot)
+
+        train_dataset = GTADatasetTrain(data_root=config.data_root,
+                                        pairs_meta_file=config.train_pairs_meta_file,
+                                        transforms_query=train_drone_transforms,
+                                        transforms_gallery=train_sat_transforms,
+                                        group_len=config.group_len,
+                                        prob_flip=config.prob_flip,
+                                        shuffle_batch_size=config.batch_size,
+                                        mode=config.train_mode,
+                                        train_ratio=config.train_ratio,
                                         )
-    query_img_list = query_dataset_test.images_name
-    query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
-    pairs_drone2sate_dict = query_dataset_test.pairs_drone2sate_dict
+
+        train_dataloader = DataLoader(train_dataset,
+                                      batch_size=config.batch_size,
+                                      num_workers=config.num_workers,
+                                      shuffle=not config.custom_sampling,
+                                      pin_memory=True)
+
+        if config.query_mode == 'D2S':
+            query_view = 'drone'
+            gallery_view = 'sate'
+        else:
+            query_view = 'sate'
+            gallery_view = 'drone'
+        query_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                            pairs_meta_file=config.test_pairs_meta_file,
+                                            view=query_view,
+                                            transforms=val_transforms,
+                                            mode=config.test_mode,
+                                            sate_img_dir=config.sate_img_dir,
+                                            query_mode=config.query_mode,
+                                            )
+        query_img_list = query_dataset_test.images_name
+        query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
+        pairs_drone2sate_dict = query_dataset_test.pairs_drone2sate_dict
+
+        query_dataloader_test = DataLoader(query_dataset_test,
+                                           batch_size=config.batch_size_eval,
+                                           num_workers=config.num_workers,
+                                           shuffle=False,
+                                           pin_memory=True)
+
+        gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                              pairs_meta_file=config.test_pairs_meta_file,
+                                              view=gallery_view,
+                                              transforms=val_transforms,
+                                              mode=config.test_mode,
+                                              sate_img_dir=config.sate_img_dir,
+                                              query_mode=config.query_mode,
+                                             )
+        gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
+        gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
+        gallery_img_list = gallery_dataset_test.images_name
+
+        gallery_dataloader_test = DataLoader(gallery_dataset_test,
+                                           batch_size=config.batch_size_eval,
+                                           num_workers=config.num_workers,
+                                           shuffle=False,
+                                           pin_memory=True)
     
-    query_dataloader_test = DataLoader(query_dataset_test,
-                                       batch_size=config.batch_size_eval,
-                                       num_workers=config.num_workers,
-                                       shuffle=False,
-                                       pin_memory=True)
-    
-    # Test gallery
-    gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                          pairs_meta_file=config.test_pairs_meta_file,
-                                          view=gallery_view,
-                                          transforms=val_transforms,
-                                          mode=config.test_mode,
-                                          sate_img_dir=config.sate_img_dir,
-                                          query_mode=config.query_mode,
-                                         )
-    gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
-    gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
-    gallery_img_list = gallery_dataset_test.images_name
-    
-    gallery_dataloader_test = DataLoader(gallery_dataset_test,
-                                       batch_size=config.batch_size_eval,
-                                       num_workers=config.num_workers,
-                                       shuffle=False,
-                                       pin_memory=True)
-    
-    print("Query Images Test:", len(query_dataset_test))
-    print("Gallery Images Test:", len(gallery_dataset_test))
+    logger.info("测试查询集图像数: %s", len(query_dataset_test))
+    logger.info("测试图库图像数: %s", len(gallery_dataset_test))
     
     #-----------------------------------------------------------------------------#
     # Loss                                                                        #
     #-----------------------------------------------------------------------------#
-    print("Train with weight?", config.with_weight, "k=", config.k)
+    logger.info("是否启用加权训练: %s, k=%s", config.with_weight, config.k)
     
     loss_function_normal = WeightedInfoNCE(
         device=config.device,
@@ -335,7 +329,7 @@ def train_script(config):
     warmup_steps = len(train_dataloader) * config.warmup_epochs
        
     if config.scheduler == "polynomial":
-        print("\nScheduler: polynomial - max LR: {} - end LR: {}".format(config.lr, config.lr_end))  
+        logger.info("学习率调度器: polynomial - 最大LR: %s - 结束LR: %s", config.lr, config.lr_end)
         scheduler = get_polynomial_decay_schedule_with_warmup(optimizer,
                                                               num_training_steps=train_steps,
                                                               lr_end = config.lr_end,
@@ -343,42 +337,43 @@ def train_script(config):
                                                               num_warmup_steps=warmup_steps)
         
     elif config.scheduler == "cosine":
-        print("\nScheduler: cosine - max LR: {}".format(config.lr))   
+        logger.info("学习率调度器: cosine - 最大LR: %s", config.lr)
         scheduler = get_cosine_schedule_with_warmup(optimizer,
                                                     num_training_steps=train_steps,
                                                     num_warmup_steps=warmup_steps)
         
     elif config.scheduler == "constant":
-        print("\nScheduler: constant - max LR: {}".format(config.lr))   
+        logger.info("学习率调度器: constant - 最大LR: %s", config.lr)
         scheduler =  get_constant_schedule_with_warmup(optimizer,
                                                        num_warmup_steps=warmup_steps)
            
     else:
         scheduler = None
         
-    print("Warmup Epochs: {} - Warmup Steps: {}".format(str(config.warmup_epochs).ljust(2), warmup_steps))
-    print("Train Epochs:  {} - Train Steps:  {}".format(config.epochs, train_steps))
+    logger.info("Warmup 轮数: %s - Warmup 步数: %s", str(config.warmup_epochs).ljust(2), warmup_steps)
+    logger.info("训练总轮数: %s - 训练总步数: %s", config.epochs, train_steps)
         
         
     #-----------------------------------------------------------------------------#
     # Zero Shot                                                                   #
     #-----------------------------------------------------------------------------#
     if config.zero_shot:
-        print("\n{}[{}]{}".format(30*"-", "Zero Shot", 30*"-"))  
-
-        r1_test = evaluate(config=config,
-                           model=model,
-                           query_loader=query_dataloader_test,
-                           gallery_loader=gallery_dataloader_test, 
-                           query_list=query_img_list,
-                           gallery_list=gallery_img_list,
-                           pairs_dict=pairs_drone2sate_dict,
-                           ranks_list=[1, 5, 10],
-                           query_center_loc_xy_list=query_center_loc_xy_list,
-                           gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                           gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
-                           step_size=1000,
-                           cleanup=True)
+        logger.info("%s[Zero Shot]%s", 30*"-", 30*"-")
+        with log_timer(logger, "zero_shot_evaluation", level=logging.INFO, sync_cuda=True):
+            r1_test = evaluate(config=config,
+                               model=model,
+                               query_loader=query_dataloader_test,
+                               gallery_loader=gallery_dataloader_test,
+                               query_list=query_img_list,
+                               gallery_list=gallery_img_list,
+                               pairs_dict=pairs_drone2sate_dict,
+                               ranks_list=[1, 5, 10],
+                               query_center_loc_xy_list=query_center_loc_xy_list,
+                               gallery_center_loc_xy_list=gallery_center_loc_xy_list,
+                               gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+                               step_size=1000,
+                               cleanup=True,
+                               logger=logger)
            
             
     #-----------------------------------------------------------------------------#
@@ -390,60 +385,61 @@ def train_script(config):
 
     for epoch in range(1, config.epochs+1):
         
-        print("\n{}[Epoch: {}]{}".format(30*"-", epoch, 30*"-"))
+        logger.info("%s[Epoch: %s]%s", 30*"-", epoch, 30*"-")
 
         if config.custom_sampling:
             train_dataloader.dataset.shuffle()
-        
-        train_loss = train_with_weight(config,
-                           model,
-                           dataloader=train_dataloader,
-                           loss_function=loss_function_normal,
-                           optimizer=optimizer,
-                           scheduler=scheduler,
-                           scaler=scaler,
-                           with_weight=config.with_weight)
-        
-        print("Epoch: {}, Train Loss = {:.3f}, Lr = {:.6f}".format(epoch,
-                                                                   train_loss,
-                                                                   optimizer.param_groups[0]['lr']))
+        with log_timer(logger, f"train_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+            train_loss = train_with_weight(config,
+                               model,
+                               dataloader=train_dataloader,
+                               loss_function=loss_function_normal,
+                               optimizer=optimizer,
+                               scheduler=scheduler,
+                               scaler=scaler,
+                               with_weight=config.with_weight,
+                               logger=logger)
+
+            logger.info("第 %s 轮: 训练损失 = %.3f, 学习率 = %.6f", epoch,
+                    train_loss, optimizer.param_groups[0]['lr'])
         
         # evaluate
         if (epoch % config.eval_every_n_epoch == 0 and epoch != 0) or epoch == config.epochs:
         
-            print("\n{}[{}]{}".format(30*"-", "Evaluate", 30*"-"))
-        
-            r1_test = evaluate(config=config,
-                                model=model,
-                                query_loader=query_dataloader_test,
-                                gallery_loader=gallery_dataloader_test, 
-                                query_list=query_img_list,
-                                gallery_list=gallery_img_list,
-                                pairs_dict=pairs_drone2sate_dict,
-                                ranks_list=[1, 5, 10],
-                                query_center_loc_xy_list=query_center_loc_xy_list,
-                                gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                                gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
-                                step_size=1000,
-                                cleanup=True)
+            logger.info("%s[Evaluate]%s", 30*"-", 30*"-")
+            with log_timer(logger, f"evaluate_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+                r1_test = evaluate(config=config,
+                                    model=model,
+                                    query_loader=query_dataloader_test,
+                                    gallery_loader=gallery_dataloader_test,
+                                    query_list=query_img_list,
+                                    gallery_list=gallery_img_list,
+                                    pairs_dict=pairs_drone2sate_dict,
+                                    ranks_list=[1, 5, 10],
+                                    query_center_loc_xy_list=query_center_loc_xy_list,
+                                    gallery_center_loc_xy_list=gallery_center_loc_xy_list,
+                                    gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+                                    step_size=1000,
+                                    cleanup=True,
+                                    logger=logger)
                 
             if r1_test > best_score or epoch == config.epochs:
 
                 best_score = r1_test
 
-                if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
-                    torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
-                else:
-                    torch.save(model.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
+                with log_timer(logger, f"save_checkpoint_epoch_{epoch}", level=logging.INFO, sync_cuda=True):
+                    if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
+                        torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
+                    else:
+                        torch.save(model.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
                 
-    if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
-        torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
-    else:
-        torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))  
+    with log_timer(logger, "save_final_checkpoint", level=logging.INFO, sync_cuda=True):
+        if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
+            torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
+        else:
+            torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))
 
-    if config.log_to_file:
-        f.close()
-        sys.stdout = sys.__stdout__          
+    logger.info("训练完成，最佳 Recall@1=%.4f", best_score)
 
 
 def parse_args():

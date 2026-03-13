@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from ..utils import AverageMeter
 
 
-def train_with_weight(train_config, model, dataloader, loss_function, optimizer, scheduler=None, scaler=None, recon_weight=0.1, loss_recon=None, train_with_recon=False, with_weight=False):
+def train_with_weight(train_config, model, dataloader, loss_function, optimizer, scheduler=None, scaler=None, recon_weight=0.1, loss_recon=None, train_with_recon=False, with_weight=False, logger=None):
 
     # set model train mode
     model.train()
@@ -30,6 +30,11 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
         bar = dataloader
     
     # for loop over one epoch
+    stage_meter = {
+        "to_device": 0.0,
+        "forward_loss": 0.0,
+        "backward_optim": 0.0,
+    }
     for query, reference, weight in bar:
         # print('jyxjyxjyx', query.shape)
         start_time = time.time()
@@ -37,11 +42,14 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
         if scaler:
             with autocast():
                 # data (batches) to device   
+                t0 = time.perf_counter()
                 query = query.to(train_config.device)
                 reference = reference.to(train_config.device)
                 weight = weight.to(train_config.device)
+                stage_meter["to_device"] += time.perf_counter() - t0
             
                 # # Forward pass
+                t1 = time.perf_counter()
                 loss = {}
 
                 if train_with_recon:
@@ -70,7 +78,9 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
                 
                 loss_total = sum(loss.values())
                 losses.update(loss_total.item())
+                stage_meter["forward_loss"] += time.perf_counter() - t1
             
+            t2 = time.perf_counter()
             scaler.scale(loss_total).backward()
             
             # Gradient clipping 
@@ -88,14 +98,18 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
             # Scheduler
             if train_config.scheduler == "polynomial" or train_config.scheduler == "cosine" or train_config.scheduler ==  "constant":
                 scheduler.step()
+            stage_meter["backward_optim"] += time.perf_counter() - t2
    
         else:
         
+            t0 = time.perf_counter()
             query = query.to(train_config.device)
             reference = reference.to(train_config.device)
             weight = weight.to(train_config.device)
+            stage_meter["to_device"] += time.perf_counter() - t0
         
             # # Forward pass
+            t1 = time.perf_counter()
             loss = {}
 
             if train_with_recon:
@@ -124,7 +138,9 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
             
             loss_total = sum(loss.values())
             losses.update(loss_total.item())
+            stage_meter["forward_loss"] += time.perf_counter() - t1
             
+            t2 = time.perf_counter()
             loss_total.backward()
             
             # Gradient clipping 
@@ -139,6 +155,7 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
             # Scheduler
             if train_config.scheduler == "polynomial" or train_config.scheduler == "cosine" or train_config.scheduler ==  "constant":
                 scheduler.step()
+            stage_meter["backward_optim"] += time.perf_counter() - t2
         
         if train_config.verbose:
             
@@ -165,11 +182,25 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
                 print_log += "{}: {:.4f}, ".format(k, v)
 
             print(print_log, flush=True)
+            if logger is not None:
+                logger.debug(
+                    "训练步=%d/%d 单步耗时=%.4fs 预计剩余=%.2fs loss=%.4f lr=%.6f",
+                    step, total_step, iter_time, eta, loss_total.item(), optimizer.param_groups[0]['lr']
+                )
         
         step += 1
 
     if train_config.verbose:
         bar.close()
+
+    if logger is not None:
+        logger.info(
+            "训练阶段耗时统计 数据搬运=%.4fs 前向与损失=%.4fs 反向与优化=%.4fs 总步数=%d",
+            stage_meter["to_device"],
+            stage_meter["forward_loss"],
+            stage_meter["backward_optim"],
+            total_step,
+        )
 
     return losses.avg
 
