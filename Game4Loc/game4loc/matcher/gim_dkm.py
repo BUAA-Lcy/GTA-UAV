@@ -7,10 +7,12 @@ import cv2
 import torch
 import argparse
 import warnings
+import logging
 import numpy as np
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as F
 from geopy.distance import geodesic
+import time
 
 from os.path import join
 from .tools import get_padding_size
@@ -324,9 +326,8 @@ class GimDKM:
     def __init__(
             self,
             device='cuda',
+            logger=None,
         ):
-
-        # super(GimDKM, self).__init__()
 
         ckpt = 'gim_dkm_100h.ckpt'
         self.model = DKMv3(weights=None, h=672, w=896)
@@ -344,23 +345,53 @@ class GimDKM:
 
         self.model = self.model.eval().to(device)
         self.device = device
+        self.logger = logger
+        self.stats = {
+            'n_queries': 0,
+            'preproc_s': 0.0,
+            'dkm_match_s': 0.0,
+            'dkm_sample_s': 0.0,
+            'coord_s': 0.0,
+            'filter_s': 0.0,
+            'ransac_f_s': 0.0,
+            'ransac_h_s': 0.0,
+            'total_s': 0.0,
+            'n_samples': 0,
+            'n_kept': 0,
+            'f_fail': 0,
+            'h_fail': 0,
+            'empty_kpts': 0,
+        }
+
+    def _log(self, level, msg, *args):
+        if self.logger is not None:
+            self.logger.log(level, msg, *args)
 
     def match(self, image0, image1, vis=False):
         b_ids, mconf, kpts0, kpts1 = None, None, None, None
         data = dict(color0=image0, color1=image1, image0=image0, image1=image1)
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
         orig_width0, orig_height0, pad_left0, pad_right0, pad_top0, pad_bottom0 = get_padding_size(image0, 672, 896)
         orig_width1, orig_height1, pad_left1, pad_right1, pad_top1, pad_bottom1 = get_padding_size(image1, 672, 896)
         image0_ = torch.nn.functional.pad(image0, (pad_left0, pad_right0, pad_top0, pad_bottom0))
         image1_ = torch.nn.functional.pad(image1, (pad_left1, pad_right1, pad_top1, pad_bottom1))
+        t_preproc = time.perf_counter() - t0
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            t1 = time.perf_counter()
             dense_matches, dense_certainty = self.model.match(image0_, image1_)
+            t_match = time.perf_counter() - t1
+            t2 = time.perf_counter()
             sparse_matches, mconf = self.model.sample(dense_matches, dense_certainty, 5000)
+            t_sample = time.perf_counter() - t2
 
         height0, width0 = image0_.shape[-2:]
         height1, width1 = image1_.shape[-2:]
 
+        t3 = time.perf_counter()
         kpts0 = sparse_matches[:, :2]
         kpts0 = torch.stack((
             width0 * (kpts0[:, 0] + 1) / 2, height0 * (kpts0[:, 1] + 1) / 2), dim=-1,)
@@ -368,8 +399,9 @@ class GimDKM:
         kpts1 = torch.stack((
             width1 * (kpts1[:, 0] + 1) / 2, height1 * (kpts1[:, 1] + 1) / 2), dim=-1,)
         b_ids = torch.where(mconf[None])[0]
+        t_coord = time.perf_counter() - t3
 
-        # before padding
+        t4 = time.perf_counter()
         kpts0 -= kpts0.new_tensor((pad_left0, pad_top0))[None]
         kpts1 -= kpts1.new_tensor((pad_left1, pad_top1))[None]
         mask_ = (kpts0[:, 0] > 0) & \
@@ -386,17 +418,35 @@ class GimDKM:
         b_ids = b_ids[mask_]
         kpts0 = kpts0[mask_]
         kpts1 = kpts1[mask_]
+        t_filter = time.perf_counter() - t4
 
-        # robust fitting
         if len(kpts0) == 0 or len(kpts1) == 0:
+            self.stats['empty_kpts'] += 1
+            total_t = time.perf_counter() - t_total
+            self.stats['n_queries'] += 1
+            self.stats['preproc_s'] += t_preproc
+            self.stats['dkm_match_s'] += 0.0
+            self.stats['dkm_sample_s'] += 0.0
+            self.stats['coord_s'] += t_coord
+            self.stats['filter_s'] += t_filter
+            self.stats['ransac_f_s'] += 0.0
+            self.stats['ransac_h_s'] += 0.0
+            self.stats['total_s'] += total_t
+            self._log(logging.DEBUG,
+                      "with_match 子步骤: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d",
+                      t_preproc, 0.0, 0.0, t_coord, t_filter, 0.0, 0.0, total_t, int(sparse_matches.shape[0]) if 'sparse_matches' in locals() else 0, int(kpts0.shape[0]))
             return np.eye(3)
 
         try:
+            t5 = time.perf_counter()
             _, mask = cv2.findFundamentalMat(kpts0.cpu().detach().numpy(),
                                             kpts1.cpu().detach().numpy(),
                                             cv2.USAC_MAGSAC, ransacReprojThreshold=1.0,
                                             confidence=0.999999, maxIters=10000)
+            t_f = time.perf_counter() - t5
         except Exception as e:
+            t_f = 0.0
+            self.stats['f_fail'] += 1
             return np.eye(3)
 
         mask = mask.ravel() > 0
@@ -411,7 +461,9 @@ class GimDKM:
             'inliers': mask,
         })
 
+        t6 = time.perf_counter()
         geom_info = compute_geom(data)
+        t_h = time.perf_counter() - t6
 
         if vis:
             alpha = 0.5
@@ -422,9 +474,26 @@ class GimDKM:
             wrapped_images = wrap_images(image0, image1, geom_info, "Homography")
             cv2.imwrite(join('game4loc/matcher/assets/', f'warp.png'), wrapped_images)
 
+        total_t = time.perf_counter() - t_total
+        self.stats['n_queries'] += 1
+        self.stats['preproc_s'] += t_preproc
+        self.stats['dkm_match_s'] += t_match
+        self.stats['dkm_sample_s'] += t_sample
+        self.stats['coord_s'] += t_coord
+        self.stats['filter_s'] += t_filter
+        self.stats['ransac_f_s'] += t_f
+        self.stats['ransac_h_s'] += t_h
+        self.stats['total_s'] += total_t
+        self.stats['n_samples'] += int(sparse_matches.shape[0])
+        self.stats['n_kept'] += int(kpts0.shape[0])
+        self._log(logging.DEBUG,
+                  "with_match 子步骤: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d",
+                  t_preproc, t_match, t_sample, t_coord, t_filter, t_f, t_h, total_t, int(sparse_matches.shape[0]), int(kpts0.shape[0]))
+
         return np.array(geom_info["Homography"])
     
     def est_center(self, image0, image1, center_xy0, tl_xy0):
+        t0 = time.perf_counter()
         image0 = image0.to(self.device)
         image1 = image1.to(self.device)
         if len(image0.shape) == 3:
@@ -453,13 +522,31 @@ class GimDKM:
 
         x_pixel, y_pixel = proj_center_pixel
 
-        # print('pixel', x_pixel/w, y_pixel/h)
-        # print('s', s_x, s_y)
-
         X = Xtl_0 + x_pixel * s_x
         Y = Ytl_0 + y_pixel * s_y
+        t_total = time.perf_counter() - t0
+        self._log(logging.DEBUG, "with_match 位置估计耗时=%.6fs", t_total)
 
         return X, Y
+
+    def summarize_and_log(self):
+        n = max(self.stats['n_queries'], 1)
+        avg_pre = self.stats['preproc_s'] / n
+        avg_match = self.stats['dkm_match_s'] / n
+        avg_sample = self.stats['dkm_sample_s'] / n
+        avg_coord = self.stats['coord_s'] / n
+        avg_filter = self.stats['filter_s'] / n
+        avg_f = self.stats['ransac_f_s'] / n
+        avg_h = self.stats['ransac_h_s'] / n
+        avg_total = self.stats['total_s'] / n
+        avg_ns = self.stats['n_samples'] / n
+        avg_keep = self.stats['n_kept'] / n
+        self._log(logging.INFO,
+                  "with_match 阶段平均耗时: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs",
+                  avg_pre, avg_match, avg_sample, avg_coord, avg_filter, avg_f, avg_h, avg_total)
+        self._log(logging.INFO,
+                  "with_match 阶段样本统计: 平均采样数=%.1f 平均保留数=%.1f 失败(F)=%d 失败(H)=%d 空匹配=%d 总查询=%d",
+                  avg_ns, avg_keep, self.stats['f_fail'], self.stats['h_fail'], self.stats['empty_kpts'], self.stats['n_queries'])
 
 
 
@@ -508,7 +595,5 @@ if __name__ == '__main__':
 
     est_xy = matcher.est_center(image0, image1, sate_center_xy, sate_tl_xy)
     print(f'Before error: {cal_dis(drone_xy, sate_center_xy)}, After error: {cal_dis(drone_xy, est_xy)}')
-
-
 
 

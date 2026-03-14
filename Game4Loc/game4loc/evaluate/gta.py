@@ -166,7 +166,7 @@ def evaluate(
 
     # with image match for finer loc
     if with_match:
-        matcher = GimDKM(device=config.device)
+        matcher = GimDKM(device=config.device, logger=logger)
 
     ap = 0.0
 
@@ -251,6 +251,8 @@ def evaluate(
             logger.debug("评估进度: %d/%d (%.1f%%)", i + 1, query_num, (i + 1) * 100.0 / query_num)
     
     metrics_time = time.perf_counter() - t_metrics
+    if with_match and matcher is not None:
+        matcher.summarize_and_log()
     mAP = np.mean(all_ap)
     cmc = cmc / query_num
 
@@ -367,4 +369,3 @@ def evaluate(
         print(y.tolist())
     
     return cmc[0]    
-
