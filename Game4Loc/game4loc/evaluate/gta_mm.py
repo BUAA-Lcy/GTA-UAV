@@ -141,8 +141,11 @@ def evaluate(
         dis_threshold_list=[4*(i+1) for i in range(50)],
         plot_acc_threshold=False,
         top10_log=False,
+        wandb_run=None,
+        epoch=None,
     ):
 
+    t_total = time.perf_counter()
     print("Extract Features and Compute Scores:")
     model.eval()
     query_features = predict(config, model, query_loader)
@@ -255,7 +258,22 @@ def evaluate(
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
 
-    print(' - '.join(string)) 
+    print(' - '.join(string))
+    if wandb_run is not None:
+        log_data = {
+            "eval/recall@1": float(cmc[0] * 100),
+            "eval/mAP": float(mAP * 100),
+            "eval/sdm@1": float(sdm_list[0]) if len(sdm_list) > 0 else 0.0,
+            "eval/dis@1": float(dis_list[0]) if len(dis_list) > 0 else 0.0,
+            "time/eval_mm/total_s": time.perf_counter() - t_total,
+        }
+        if len(cmc) > 4:
+            log_data["eval/recall@5"] = float(cmc[4] * 100)
+        if len(cmc) > 9:
+            log_data["eval/recall@10"] = float(cmc[9] * 100)
+        if epoch is not None:
+            log_data["eval/epoch"] = int(epoch)
+        wandb_run.log(log_data)
     
     # cleanup and free memory on GPU
     if cleanup:

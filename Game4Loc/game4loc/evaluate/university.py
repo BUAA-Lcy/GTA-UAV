@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 import gc
+import time
 from ..trainer import predict
 
 
@@ -11,17 +12,30 @@ def evaluate(config,
                   gallery_loader,
                   ranks=[1, 5, 10],
                   step_size=1000,
-                  cleanup=True):
-    
-    
-    print("Extract Features:")
+                  cleanup=True,
+                  wandb_run=None,
+                  epoch=None,
+                  logger=None):
+    t_total = time.perf_counter()
+    if logger is not None:
+        logger.info("开始评估：提取查询与图库特征")
+        logger.debug("评估参数：ranks=%s, step_size=%s, cleanup=%s", ranks, step_size, cleanup)
+    else:
+        print("Extract Features:")
+
+    t_extract = time.perf_counter()
     img_features_query, ids_query = predict(config, model, query_loader)
     img_features_gallery, ids_gallery = predict(config, model, gallery_loader)
+    extract_time = time.perf_counter() - t_extract
     
     gl = ids_gallery.cpu().numpy()
     ql = ids_query.cpu().numpy()
     
-    print("Compute Scores:")
+    if logger is not None:
+        logger.info("开始计算相似度分数与检索指标")
+    else:
+        print("Compute Scores:")
+    t_metrics = time.perf_counter()
     CMC = torch.IntTensor(len(ids_gallery)).zero_()
     ap = 0.0
     for i in range(len(ids_query)):
@@ -31,6 +45,7 @@ def evaluate(config,
         CMC = CMC + CMC_tmp
         ap += ap_tmp
     
+    metrics_time = time.perf_counter() - t_metrics
     AP = ap/len(ids_query)*100
     
     CMC = CMC.float()
@@ -47,7 +62,44 @@ def evaluate(config,
     string.append('Recall@top1: {:.4f}'.format(CMC[top1]*100))
     string.append('AP: {:.4f}'.format(AP))             
         
-    print(' - '.join(string)) 
+    result_str = ' - '.join(string)
+    if logger is not None:
+        logger.info(result_str)
+        logger.info(
+            "评估结果摘要：Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, AP=%.4f%%",
+            CMC[0] * 100,
+            CMC[4] * 100 if len(CMC) > 4 else -1.0,
+            CMC[9] * 100 if len(CMC) > 9 else -1.0,
+            AP,
+        )
+        logger.debug(
+            "评估耗时统计：特征提取=%.6fs, 指标计算=%.6fs, 总耗时=%.6fs, 查询数=%d, 图库数=%d",
+            extract_time,
+            metrics_time,
+            time.perf_counter() - t_total,
+            len(ids_query),
+            len(ids_gallery),
+        )
+    else:
+        print(result_str)
+
+    if wandb_run is not None:
+        log_data = {
+            "eval/recall@1": float(CMC[0] * 100),
+            "eval/AP": float(AP),
+            "time/eval_university/extract_s": extract_time,
+            "time/eval_university/metrics_s": metrics_time,
+            "time/eval_university/total_s": time.perf_counter() - t_total,
+            "eval/query_num": int(len(ids_query)),
+            "eval/gallery_num": int(len(ids_gallery)),
+        }
+        if len(CMC) > 4:
+            log_data["eval/recall@5"] = float(CMC[4] * 100)
+        if len(CMC) > 9:
+            log_data["eval/recall@10"] = float(CMC[9] * 100)
+        if epoch is not None:
+            log_data["eval/epoch"] = int(epoch)
+        wandb_run.log(log_data)
     
     # cleanup and free memory on GPU
     if cleanup:

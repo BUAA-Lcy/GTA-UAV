@@ -3,6 +3,7 @@ import time
 import math
 import shutil
 import sys
+import atexit
 import torch
 import argparse
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from game4loc.trainer.trainer import train, train_with_weight
 from game4loc.evaluate.gta_rgbd import evaluate
 from game4loc.loss import InfoNCE, WeightedInfoNCE, GroupInfoNCE, TripletLoss
 from game4loc.models.model_rgbd import DesModelWithRGBD
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 
 def parse_tuple(s):
@@ -100,6 +102,7 @@ class Configuration:
     
     # Savepath for model checkpoints
     model_path: str = "./work_dir/gta"
+    use_wandb: bool = True
 
     query_mode: str = "D2S"               # Retrieval in Drone to Satellite
 
@@ -136,6 +139,7 @@ class Configuration:
 #-----------------------------------------------------------------------------#
 
 def train_script(config):
+    wandb_run = None
 
     if config.log_to_file:
         f = open(config.log_path, 'w')
@@ -160,6 +164,11 @@ def train_script(config):
     print("training save in path: {}".format(model_path))
 
     print("training start from", config.checkpoint_start)
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=config.model)
+        wandb_run.config.update({"learning_rate": config.lr, "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run)
+        safe_log(wandb_run, {"meta/model_path": model_path})
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
@@ -167,12 +176,13 @@ def train_script(config):
     print("\nModel: {}".format(config.model))
     print(f"Drone and satellite image encoder share weights? {config.share_weights}")
 
-    model = DesModelWithRGBD(model_name=config.model, 
-                    pretrained=True,
-                    img_size=config.img_size,
-                    share_weights=config.share_weights,
-                    diff_guidance=config.diff_guidance,
-                    global_pool=config.global_pool)
+    with WandbStepTimer("train_rgbd/model_initialization", run=wandb_run, sync_cuda=True):
+        model = DesModelWithRGBD(model_name=config.model, 
+                        pretrained=True,
+                        img_size=config.img_size,
+                        share_weights=config.share_weights,
+                        diff_guidance=config.diff_guidance,
+                        global_pool=config.global_pool)
 
     data_config = model.get_config()
     print(data_config)
@@ -219,9 +229,10 @@ def train_script(config):
     #-----------------------------------------------------------------------------#
 
     # Transforms
-    val_sat_transforms, val_drone_rgb_transforms, val_drone_depth_transforms, train_sat_transforms, \
-        train_drone_geo_transforms, train_drone_rgb_transforms, train_drone_depth_transforms \
-         = get_transforms(img_size, mean=mean, std=std)
+    with WandbStepTimer("train_rgbd/data_loading", run=wandb_run):
+        val_sat_transforms, val_drone_rgb_transforms, val_drone_depth_transforms, train_sat_transforms, \
+            train_drone_geo_transforms, train_drone_rgb_transforms, train_drone_depth_transforms \
+             = get_transforms(img_size, mean=mean, std=std)
                                                                                                                                  
     # Train
     train_dataset = GTARGBDDatasetTrain(data_root=config.data_root,
@@ -370,18 +381,22 @@ def train_script(config):
     if config.zero_shot:
         print("\n{}[{}]{}".format(30*"-", "Zero Shot", 30*"-"))  
 
-        r1_test = evaluate(config=config,
-                           model=model,
-                           query_loader=query_dataloader_test,
-                           gallery_loader=gallery_dataloader_test, 
-                           query_list=query_img_list,
-                           gallery_list=gallery_img_list,
-                           pairs_dict=pairs_drone2sate_dict,
-                           ranks_list=[1, 5, 10],
-                           query_loc_xy_list=query_loc_xy_list,
-                           gallery_loc_xy_list=gallery_loc_xy_list,
-                           step_size=1000,
-                           cleanup=True)
+        with WandbStepTimer("train_rgbd/zero_shot_evaluation", run=wandb_run, step=0, sync_cuda=True):
+            r1_test = evaluate(config=config,
+                               model=model,
+                               query_loader=query_dataloader_test,
+                               gallery_loader=gallery_dataloader_test, 
+                               query_list=query_img_list,
+                               gallery_list=gallery_img_list,
+                               pairs_dict=pairs_drone2sate_dict,
+                               ranks_list=[1, 5, 10],
+                               query_loc_xy_list=query_loc_xy_list,
+                               gallery_loc_xy_list=gallery_loc_xy_list,
+                               step_size=1000,
+                               cleanup=True,
+                               wandb_run=wandb_run,
+                               epoch=0)
+        safe_log(wandb_run, {"eval/zero_shot_recall@1": float(r1_test) * 100.0}, step=0)
            
             
     #-----------------------------------------------------------------------------#
@@ -398,40 +413,49 @@ def train_script(config):
         if config.custom_sampling:
             train_dataloader.dataset.shuffle()
         
-        train_loss = train_with_weight(config,
-                           model,
-                           dataloader=train_dataloader,
-                           loss_function=loss_function_normal,
-                           optimizer=optimizer,
-                           scheduler=scheduler,
-                           scaler=scaler,
-                           with_weight=config.with_weight)
+        with WandbStepTimer("train_rgbd/train_epoch", run=wandb_run, step=epoch, sync_cuda=True):
+            train_loss = train_with_weight(config,
+                               model,
+                               dataloader=train_dataloader,
+                               loss_function=loss_function_normal,
+                               optimizer=optimizer,
+                               scheduler=scheduler,
+                               scaler=scaler,
+                               with_weight=config.with_weight,
+                               wandb_run=wandb_run,
+                               epoch=epoch)
         
         print("Epoch: {}, Train Loss = {:.3f}, Lr = {:.6f}".format(epoch,
                                                                    train_loss,
                                                                    optimizer.param_groups[0]['lr']))
+        safe_log(wandb_run, {"train/loss": float(train_loss), "train/lr": optimizer.param_groups[0]['lr'], "train/epoch": epoch}, step=epoch)
         
         # evaluate
         if (epoch % config.eval_every_n_epoch == 0 and epoch != 0) or epoch == config.epochs:
         
             print("\n{}[{}]{}".format(30*"-", "Evaluate", 30*"-"))
         
-            r1_test = evaluate(config=config,
-                                model=model,
-                                query_loader=query_dataloader_test,
-                                gallery_loader=gallery_dataloader_test, 
-                                query_list=query_img_list,
-                                gallery_list=gallery_img_list,
-                                pairs_dict=pairs_drone2sate_dict,
-                                ranks_list=[1, 5, 10],
-                                query_loc_xy_list=query_loc_xy_list,
-                                gallery_loc_xy_list=gallery_loc_xy_list,
-                                step_size=1000,
-                                cleanup=True)
+            with WandbStepTimer("train_rgbd/evaluate_epoch", run=wandb_run, step=epoch, sync_cuda=True):
+                r1_test = evaluate(config=config,
+                                    model=model,
+                                    query_loader=query_dataloader_test,
+                                    gallery_loader=gallery_dataloader_test, 
+                                    query_list=query_img_list,
+                                    gallery_list=gallery_img_list,
+                                    pairs_dict=pairs_drone2sate_dict,
+                                    ranks_list=[1, 5, 10],
+                                    query_loc_xy_list=query_loc_xy_list,
+                                    gallery_loc_xy_list=gallery_loc_xy_list,
+                                    step_size=1000,
+                                    cleanup=True,
+                                    wandb_run=wandb_run,
+                                    epoch=epoch)
+            safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0, "eval/epoch": epoch}, step=epoch)
                 
             if r1_test > best_score:
 
                 best_score = r1_test
+                safe_log(wandb_run, {"eval/best_recall@1": float(best_score) * 100.0}, step=epoch)
 
                 if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
                     torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
@@ -442,6 +466,8 @@ def train_script(config):
         torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
     else:
         torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))  
+    safe_log(wandb_run, {"final/best_recall@1": float(best_score) * 100.0}, step=config.epochs)
+    finish_wandb(wandb_run)
 
     if config.log_to_file:
         f.close()
@@ -510,6 +536,7 @@ def parse_args():
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
 
     parser.add_argument('--global_pool', type=str, default='avg', help='Global pool of model')
+    parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
 
     args = parser.parse_args()
     return args
@@ -549,5 +576,6 @@ if __name__ == '__main__':
     config.train_ratio = args.train_ratio
     config.diff_guidance = args.diff_guidance
     config.global_pool = args.global_pool
+    config.use_wandb = not(args.no_wandb)
 
     train_script(config)

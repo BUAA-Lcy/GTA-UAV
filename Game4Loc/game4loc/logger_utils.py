@@ -87,6 +87,16 @@ def log_config(logger: logging.Logger, config: Any) -> None:
         logger.info("  %s = %s", key, value)
 
 
+def log_run_header(logger: logging.Logger, run_mode: str, algorithm_name: str) -> None:
+    mode_zh = "训练运行" if str(run_mode).lower().startswith("train") else "测试运行"
+    logger.info("=" * 80)
+    logger.info("Game4Loc 日志启动")
+    logger.info("运行类型: %s", mode_zh)
+    logger.info("算法名称: %s", algorithm_name)
+    logger.info("启动时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("=" * 80)
+
+
 class log_timer(ContextDecorator):
     def __init__(
         self,

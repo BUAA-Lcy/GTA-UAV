@@ -1,4 +1,5 @@
 import os
+import atexit
 import torch
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
@@ -6,6 +7,7 @@ from torch.utils.data import DataLoader
 from game4loc.dataset.gta_rgbd import GTARGBDDatasetEval, get_transforms
 from game4loc.evaluate.gta_rgbd import evaluate
 from game4loc.models.model_rgbd import DesModelWithRGBD
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Configuration:
 
     ####### Same-area
     dis_threshold_list = [4*(i+1) for i in range(50)]
+    use_wandb: bool = True
 
 
 #-----------------------------------------------------------------------------#
@@ -64,6 +67,11 @@ config = Configuration()
 
 
 if __name__ == '__main__':
+    wandb_run = None
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_gta_rgbd")
+        wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
@@ -71,9 +79,10 @@ if __name__ == '__main__':
     
     print("\nModel: {}".format(config.model))
 
-    model = DesModelWithRGBD(config.model,
-                          pretrained=True,
-                          img_size=config.img_size)
+    with WandbStepTimer("eval_gta_rgbd/model_initialization", run=wandb_run, sync_cuda=True):
+        model = DesModelWithRGBD(config.model,
+                              pretrained=True,
+                              img_size=config.img_size)
                           
     data_config = model.get_config()
     print(data_config)
@@ -107,9 +116,10 @@ if __name__ == '__main__':
     #-----------------------------------------------------------------------------#
 
     # Transforms
-    val_sat_transforms, val_drone_rgb_transforms, val_drone_depth_transforms, train_sat_transforms, \
-        train_drone_geo_transforms, train_drone_rgb_transforms, train_drone_depth_transforms \
-         = get_transforms(img_size, mean=mean, std=std)
+    with WandbStepTimer("eval_gta_rgbd/data_loading", run=wandb_run):
+        val_sat_transforms, val_drone_rgb_transforms, val_drone_depth_transforms, train_sat_transforms, \
+            train_drone_geo_transforms, train_drone_rgb_transforms, train_drone_depth_transforms \
+             = get_transforms(img_size, mean=mean, std=std)
 
     query_view = 'drone'
     gallery_view = 'sate'
@@ -157,20 +167,24 @@ if __name__ == '__main__':
     
     print("\n{}[{}]{}".format(30*"-", "GTA-VisLoc", 30*"-"))  
 
-    r1_test = evaluate(config=config,
-                           model=model,
-                           query_loader=query_dataloader_test,
-                           gallery_loader=gallery_dataloader_test, 
-                           query_list=query_img_list,
-                           gallery_list=gallery_img_list,
-                           pairs_dict=pairs_drone2sate_dict,
-                           ranks_list=[1, 5, 10],
-                           query_loc_xy_list=query_loc_xy_list,
-                           gallery_loc_xy_list=gallery_loc_xy_list,
-                           step_size=1000,
-                           dis_threshold_list=config.dis_threshold_list,
-                           cleanup=True,
-                           plot_acc_threshold=True,
-                           top10_log=True)
+    with WandbStepTimer("eval_gta_rgbd/evaluation", run=wandb_run, sync_cuda=True):
+        r1_test = evaluate(config=config,
+                               model=model,
+                               query_loader=query_dataloader_test,
+                               gallery_loader=gallery_dataloader_test, 
+                               query_list=query_img_list,
+                               gallery_list=gallery_img_list,
+                               pairs_dict=pairs_drone2sate_dict,
+                               ranks_list=[1, 5, 10],
+                               query_loc_xy_list=query_loc_xy_list,
+                               gallery_loc_xy_list=gallery_loc_xy_list,
+                               step_size=1000,
+                               dis_threshold_list=config.dis_threshold_list,
+                               cleanup=True,
+                               plot_acc_threshold=True,
+                               top10_log=True,
+                               wandb_run=wandb_run)
+    safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
+    finish_wandb(wandb_run)
 
 

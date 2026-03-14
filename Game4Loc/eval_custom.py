@@ -1,4 +1,5 @@
 import os
+import atexit
 import torch
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
@@ -8,6 +9,7 @@ from game4loc.dataset.custom_query import CustomData
 from game4loc.models.model import DesModel
 
 from game4loc.evaluate.query_topn import QueryTopN
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 import matplotlib.pyplot as plt
 
@@ -59,6 +61,7 @@ class Configuration:
     
     # train on GPU if available
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu' 
+    use_wandb: bool = True
 
 
 #-----------------------------------------------------------------------------#
@@ -75,6 +78,11 @@ config.gallery_folder_test = '/home/xmuairmud/data/GTA-UAV-data/satellite_z41'
 
 
 if __name__ == '__main__':
+    wandb_run = None
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_custom")
+        wandb_run.config.update({"run_type": "eval_custom", "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
@@ -83,9 +91,10 @@ if __name__ == '__main__':
     print("\nModel: {}".format(config.model))
 
 
-    model = DesModel(config.model,
-                          pretrained=True,
-                          img_size=config.img_size)
+    with WandbStepTimer("eval_custom/model_initialization", run=wandb_run, sync_cuda=True):
+        model = DesModel(config.model,
+                              pretrained=True,
+                              img_size=config.img_size)
                           
     data_config = model.get_config()
     print(data_config)
@@ -119,7 +128,8 @@ if __name__ == '__main__':
     #-----------------------------------------------------------------------------#
 
     # Transforms
-    val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
+    with WandbStepTimer("eval_custom/data_loading", run=wandb_run):
+        val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
 
     # Reference Satellite Images
     query_dataset_test = CustomData(root_dir=config.query_folder_test,
@@ -145,7 +155,8 @@ if __name__ == '__main__':
                                        shuffle=False,
                                        pin_memory=True)                                                                                                               
 
-    results = QueryTopN(config, model, query_dataloader_test, query_path_list, gallery_dataloader_test, gallery_path_list)
+    with WandbStepTimer("eval_custom/query_topn", run=wandb_run, sync_cuda=True):
+        results = QueryTopN(config, model, query_dataloader_test, query_path_list, gallery_dataloader_test, gallery_path_list)
 
     predict_sate_xy_dict = {}
     loc_sate_xy_dict = {}
@@ -176,7 +187,15 @@ if __name__ == '__main__':
 
         predict_sate_xy_dict[num] = (predict_xy[0]/0.45/16, predict_xy[1]/0.45/16)
         loc_sate_xy_dict[num] = (loc_xy[0]/0.45/16, loc_xy[1]/0.45/16)
-    print('dis avg', dis_sum/len(results))
+    dis_avg = dis_sum / len(results)
+    print('dis avg', dis_avg)
+    safe_log(
+        wandb_run,
+        {
+            "eval/dis_avg": float(dis_avg),
+            "eval/query_count": int(len(results)),
+        },
+    )
 
     predict_sate_xy = []
     loc_sate_xy = []
@@ -247,6 +266,8 @@ if __name__ == '__main__':
 
     # 保存动画为 mp4 文件
     ani.save('line_animation.mp4', writer='ffmpeg', fps=10)
+    safe_log(wandb_run, {"artifacts/line_animation_saved": 1})
+    finish_wandb(wandb_run)
 
     # rows = len(results)
     # fig, axes = plt.subplots(nrows=rows, ncols=11, figsize=(20, 2))

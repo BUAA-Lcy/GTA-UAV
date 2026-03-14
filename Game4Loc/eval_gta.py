@@ -1,5 +1,6 @@
 import os
-import sys
+import atexit
+import logging
 import torch
 import argparse
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from torch.utils.data import DataLoader
 from game4loc.dataset.gta import GTADatasetEval, get_transforms
 from game4loc.evaluate.gta import evaluate
 from game4loc.models.model import DesModel
+from game4loc.logger_utils import setup_logger, log_config, log_timer, log_run_header
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 
 def parse_tuple(s):
@@ -56,28 +59,35 @@ class Configuration:
     train_pairs_meta_file = 'cross-area-drone2sate-train.json'
     test_pairs_meta_file = 'cross-area-drone2sate-test.json'
     sate_img_dir = 'satellite'
+    use_wandb: bool = True
 
 
 def eval_script(config):
-
-    if config.log_to_file:
-        f = open(config.log_path, 'w')
-        sys.stdout = f
+    wandb_run = None
+    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, logger_name="game4loc.eval")
+    log_run_header(logger, run_mode="test", algorithm_name=config.model)
+    logger.info("自动日志路径: %s", log_path)
+    log_config(logger, config)
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval", logger=logger)
+        wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run, logger)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
     #-----------------------------------------------------------------------------#
     
-    print("\nModel: {}".format(config.model))
+    logger.info("模型: %s", config.model)
 
-
-    model = DesModel(config.model,
-                    pretrained=False,
-                    img_size=config.img_size,
-                    share_weights=config.share_weights)
+    with log_timer(logger, "测试模型初始化", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("eval_gta/model_initialization", logger=logger, run=wandb_run, sync_cuda=True):
+        model = DesModel(config.model,
+                        pretrained=False,
+                        img_size=config.img_size,
+                        share_weights=config.share_weights)
                           
     data_config = model.get_config()
-    print(data_config)
+    logger.debug("模型数据配置: %s", data_config)
     mean = data_config["mean"]
     std = data_config["std"]
     img_size = (config.img_size, config.img_size)
@@ -85,68 +95,69 @@ def eval_script(config):
 
     # load pretrained Checkpoint    
     if config.checkpoint_start is not None:  
-        print("Start from:", config.checkpoint_start)
-        model_state_dict = torch.load(config.checkpoint_start)  
-        model.load_state_dict(model_state_dict, strict=True)     
+        with log_timer(logger, "加载测试检查点", level=logging.INFO, sync_cuda=True):
+            logger.info("加载权重文件: %s", config.checkpoint_start)
+            model_state_dict = torch.load(config.checkpoint_start)
+            model.load_state_dict(model_state_dict, strict=True)
 
     # Data parallel
-    print("GPUs available:", torch.cuda.device_count())  
+    logger.info("可用 GPU 数量: %s", torch.cuda.device_count())
     if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=config.gpu_ids)
             
     # Model to device   
     model = model.to(config.device)
 
-    print("\nImage Size Query:", img_size)
-    print("Image Size Ground:", img_size)
-    print("Mean: {}".format(mean))
-    print("Std:  {}\n".format(std)) 
+    logger.info("查询图像尺寸: %s", img_size)
+    logger.info("图库图像尺寸: %s", img_size)
+    logger.info("归一化均值 Mean: %s", mean)
+    logger.info("归一化方差 Std: %s", std)
 
 
     #-----------------------------------------------------------------------------#
     # DataLoader                                                                  #
     #-----------------------------------------------------------------------------#
 
-    # Transforms
-    val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
+    with log_timer(logger, "测试数据加载与构建", level=logging.INFO), \
+         WandbStepTimer("eval_gta/data_loading", logger=logger, run=wandb_run):
+        val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
 
-
-    # Test query
-    if config.query_mode == 'D2S':
-        query_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                            pairs_meta_file=config.test_pairs_meta_file,
-                                            view="drone",
-                                            transforms=val_transforms,
-                                            mode='pos',
-                                            query_mode=config.query_mode,
+        # Test query
+        if config.query_mode == 'D2S':
+            query_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                                pairs_meta_file=config.test_pairs_meta_file,
+                                                view="drone",
+                                                transforms=val_transforms,
+                                                mode='pos',
+                                                query_mode=config.query_mode,
+                                                )
+            gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                                pairs_meta_file=config.test_pairs_meta_file,
+                                                view="sate",
+                                                transforms=val_transforms,
+                                                sate_img_dir=config.sate_img_dir,
+                                                mode='pos',
+                                                query_mode=config.query_mode,
+                                                )
+            pairs_dict = query_dataset_test.pairs_drone2sate_dict
+        elif config.query_mode == 'S2D':
+            gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                                pairs_meta_file=config.test_pairs_meta_file,
+                                                view="drone",
+                                                transforms=val_transforms,
+                                                mode='pos',
+                                                query_mode=config.query_mode,
+                                                )
+            pairs_dict = gallery_dataset_test.pairs_sate2drone_dict
+            query_dataset_test = GTADatasetEval(data_root=config.data_root,
+                                                pairs_meta_file=config.test_pairs_meta_file,
+                                                view="sate",
+                                                transforms=val_transforms,
+                                                query_mode=config.query_mode,
+                                                pairs_sate2drone_dict=pairs_dict,
+                                                sate_img_dir=config.sate_img_dir,
+                                                mode='pos',
                                             )
-        gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                            pairs_meta_file=config.test_pairs_meta_file,
-                                            view="sate",
-                                            transforms=val_transforms,
-                                            sate_img_dir=config.sate_img_dir,
-                                            mode='pos',
-                                            query_mode=config.query_mode,
-                                            )
-        pairs_dict = query_dataset_test.pairs_drone2sate_dict
-    elif config.query_mode == 'S2D':
-        gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                            pairs_meta_file=config.test_pairs_meta_file,
-                                            view="drone",
-                                            transforms=val_transforms,
-                                            mode='pos',
-                                            query_mode=config.query_mode,
-                                            )
-        pairs_dict = gallery_dataset_test.pairs_sate2drone_dict
-        query_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                            pairs_meta_file=config.test_pairs_meta_file,
-                                            view="sate",
-                                            transforms=val_transforms,
-                                            query_mode=config.query_mode,
-                                            pairs_sate2drone_dict=pairs_dict,
-                                            sate_img_dir=config.sate_img_dir,
-                                            mode='pos',
-                                        )
     query_img_list = query_dataset_test.images_name
     query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
 
@@ -165,43 +176,46 @@ def eval_script(config):
                                        shuffle=False,
                                        pin_memory=True)
     
-    print("Query Images Test:", len(query_dataset_test))
-    print("Gallery Images Test:", len(gallery_dataset_test))
+    logger.info("测试查询图像总数: %s", len(query_dataset_test))
+    logger.info("测试图库图像总数: %s", len(gallery_dataset_test))
+    logger.debug("测试配对字典条目数: %s", len(pairs_dict))
 
     # For Test Log (distance threshold) 
     dis_threshold_list = None
     if 'cross' in config.test_pairs_meta_file:
         ####### Cross-area for total 500m/10m
-        print("cross-area eval")
+        logger.info("评估模式: 跨区域评估（cross-area）")
         dis_threshold_list = [10*(i+1) for i in range(50)]
     else:
         ####### Same-area for total 200m/4m
-        print("same-area eval")
+        logger.info("评估模式: 同区域评估（same-area）")
         dis_threshold_list = [4*(i+1) for i in range(50)]
     
-    print("\n{}[{}]{}".format(30*"-", "Evaluating GTA-UAV", 30*"-"))  
-
-    r1_test = evaluate(config=config,
-                           model=model,
-                           query_loader=query_dataloader_test,
-                           gallery_loader=gallery_dataloader_test, 
-                           query_list=query_img_list,
-                           gallery_list=gallery_img_list,
-                           pairs_dict=pairs_dict,
-                           ranks_list=[1, 5, 10],
-                           query_center_loc_xy_list=query_center_loc_xy_list,
-                           gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                           gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
-                           step_size=1000,
-                           dis_threshold_list=dis_threshold_list,
-                           cleanup=True,
-                           plot_acc_threshold=False,
-                           top10_log=False,
-                           with_match=config.with_match)
-
-    if config.log_to_file:
-        f.close()
-        sys.stdout = sys.__stdout__  
+    logger.info("%s[开始 GTA-UAV 测试评估]%s", 30*"-", 30*"-")
+    with log_timer(logger, "测试阶段总体评估", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("eval_gta/evaluation", logger=logger, run=wandb_run, sync_cuda=True):
+        r1_test = evaluate(config=config,
+                               model=model,
+                               query_loader=query_dataloader_test,
+                               gallery_loader=gallery_dataloader_test,
+                               query_list=query_img_list,
+                               gallery_list=gallery_img_list,
+                               pairs_dict=pairs_dict,
+                               ranks_list=[1, 5, 10],
+                               query_center_loc_xy_list=query_center_loc_xy_list,
+                               gallery_center_loc_xy_list=gallery_center_loc_xy_list,
+                               gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+                               step_size=1000,
+                               dis_threshold_list=dis_threshold_list,
+                               cleanup=True,
+                               plot_acc_threshold=False,
+                               top10_log=False,
+                               with_match=config.with_match,
+                               logger=logger,
+                               wandb_run=wandb_run)
+    logger.info("测试结束，Recall@1=%.4f", r1_test * 100.0)
+    safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
+    finish_wandb(wandb_run, logger=logger)
  
 
 
@@ -231,6 +245,7 @@ def parse_args():
     parser.add_argument('--test_mode', type=str, default='pos', help='Test with positive pairs')
 
     parser.add_argument('--query_mode', type=str, default='D2S', help='Retrieval with drone to satellite')
+    parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
 
     args = parser.parse_args()
     return args
@@ -252,5 +267,6 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.with_match = args.with_match
+    config.use_wandb = not(args.no_wandb)
 
     eval_script(config)

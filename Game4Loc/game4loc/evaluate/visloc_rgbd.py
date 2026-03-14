@@ -94,13 +94,24 @@ def evaluate(config,
                 sdmk_list=[1, 3, 5],
                 disk_list=[1, 3, 5],
                 step_size=1000,
-                cleanup=True):
-    print("Extract Features and Compute Scores:")
+                cleanup=True,
+                wandb_run=None,
+                epoch=None,
+                logger=None):
+    t_total = time.perf_counter()
+    if logger is not None:
+        logger.info("开始评估：提取特征并计算匹配分数")
+        logger.debug("评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s", ranks_list, sdmk_list, disk_list, step_size)
+    else:
+        print("Extract Features and Compute Scores:")
+
+    t_query = time.perf_counter()
     img_features_query = predict(config, model, query_loader)
-    # img_features_gallery = predict(config, model, gallery_loader)
+    query_extract_time = time.perf_counter() - t_query
 
     all_scores = []
     model.eval()
+    t_gallery = time.perf_counter()
     with torch.no_grad():
         for gallery_batch in gallery_loader:
             with autocast():
@@ -111,11 +122,11 @@ def evaluate(config,
 
             scores_batch = img_features_query @ gallery_features_batch.T
             all_scores.append(scores_batch.cpu())
-    
-    all_scores = torch.cat(all_scores, dim=1).numpy()
-    # print('jyxjyxjyx', all_scores.shape)
+    gallery_infer_time = time.perf_counter() - t_gallery
 
-    ap = 0.0
+    t_concat = time.perf_counter()
+    all_scores = torch.cat(all_scores, dim=1).numpy()
+    score_concat_time = time.perf_counter() - t_concat
 
     gallery_idx = {}
     gallery_mapi_idx = {}
@@ -137,7 +148,6 @@ def evaluate(config,
         matches_list.append(np.array(matches_i))
 
     matches_tensor = [torch.tensor(matches, dtype=torch.long) for matches in matches_list]
-
     query_num = img_features_query.shape[0]
 
     all_ap = []
@@ -145,58 +155,89 @@ def evaluate(config,
     sdm_list = []
     dis_list = []
 
+    t_metrics = time.perf_counter()
     for i in range(query_num):
         str_i = query_list[i].split('_')[0]
         score = all_scores[i] * gallery_mapi_idx[str_i]
-        # predict index
         index = np.argsort(score)[::-1]
 
         sdm_list.append(sdm(query_loc_xy_list[i], sdmk_list, index, gallery_loc_xy_list))
-
         dis_list.append(get_dis(query_loc_xy_list[i], index, gallery_loc_xy_list, disk_list))
 
-        good_index_i = np.isin(index, matches_tensor[i]) 
-        
-        # 计算 AP
+        good_index_i = np.isin(index, matches_tensor[i])
+
         y_true = good_index_i.astype(int)
-        y_scores = np.arange(len(y_true), 0, -1)  # 分数与排名相反
-        if np.sum(y_true) > 0:  # 仅计算有正样本的情况
+        y_scores = np.arange(len(y_true), 0, -1)
+        if np.sum(y_true) > 0:
             ap = average_precision_score(y_true, y_scores)
             all_ap.append(ap)
-        
-        # 计算 CMC
+
         match_rank = np.where(good_index_i == 1)[0]
         if len(match_rank) > 0:
             cmc[match_rank[0]:] += 1
-    
+    metrics_time = time.perf_counter() - t_metrics
+
     mAP = np.mean(all_ap)
     cmc = cmc / query_num
-
     sdm_list = np.mean(np.array(sdm_list), axis=0)
     dis_list = np.mean(np.array(dis_list), axis=0)
 
-    # top 1%
     top1 = round(len(gallery_list)*0.01)
-
     string = []
-
     for i in ranks_list:
         string.append('Recall@{}: {:.4f}'.format(i, cmc[i-1]*100))
-        
     string.append('Recall@top1: {:.4f}'.format(cmc[top1]*100))
-    string.append('AP: {:.4f}'.format(mAP*100))   
-    
+    string.append('AP: {:.4f}'.format(mAP*100))
     for i in range(len(sdmk_list)):
         string.append('SDM@{}: {:.4f}'.format(sdmk_list[i], sdm_list[i]))
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
 
-    print(' - '.join(string)) 
-    
-    # cleanup and free memory on GPU
+    result_str = ' - '.join(string)
+    if logger is not None:
+        logger.info(result_str)
+        logger.info(
+            "评估摘要：Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, AP=%.4f%%",
+            cmc[0] * 100,
+            cmc[4] * 100 if len(cmc) > 4 else -1.0,
+            cmc[9] * 100 if len(cmc) > 9 else -1.0,
+            mAP * 100,
+        )
+        logger.debug(
+            "评估耗时统计：query提取=%.6fs, gallery推理=%.6fs, 分数拼接=%.6fs, 指标计算=%.6fs, 总耗时=%.6fs",
+            query_extract_time,
+            gallery_infer_time,
+            score_concat_time,
+            metrics_time,
+            time.perf_counter() - t_total,
+        )
+    else:
+        print(result_str)
+
+    if wandb_run is not None:
+        log_data = {
+            "eval/recall@1": float(cmc[0] * 100),
+            "eval/mAP": float(mAP * 100),
+            "eval/sdm@1": float(sdm_list[0]) if len(sdm_list) > 0 else 0.0,
+            "eval/dis@1": float(dis_list[0]) if len(dis_list) > 0 else 0.0,
+            "time/eval_visloc_rgbd/query_extract_s": query_extract_time,
+            "time/eval_visloc_rgbd/gallery_infer_s": gallery_infer_time,
+            "time/eval_visloc_rgbd/score_concat_s": score_concat_time,
+            "time/eval_visloc_rgbd/metrics_s": metrics_time,
+            "time/eval_visloc_rgbd/total_s": time.perf_counter() - t_total,
+            "eval/query_num": int(query_num),
+            "eval/gallery_num": int(len(gallery_list)),
+        }
+        if len(cmc) > 4:
+            log_data["eval/recall@5"] = float(cmc[4] * 100)
+        if len(cmc) > 9:
+            log_data["eval/recall@10"] = float(cmc[9] * 100)
+        if epoch is not None:
+            log_data["eval/epoch"] = int(epoch)
+        wandb_run.log(log_data)
+
     if cleanup:
         del img_features_query, gallery_features_batch, scores_batch
         gc.collect()
-        #torch.cuda.empty_cache()
-    
+
     return cmc[0]

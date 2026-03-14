@@ -1,4 +1,6 @@
 import os
+import atexit
+import logging
 import torch
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
@@ -6,6 +8,8 @@ from torch.utils.data import DataLoader
 from game4loc.dataset.sues_extend import SUESDatasetEval, get_transforms
 from game4loc.evaluate.university import evaluate
 from game4loc.models.model import DesModel
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
+from game4loc.logger_utils import setup_logger, log_config, log_run_header, log_timer
 
 
 @dataclass
@@ -39,6 +43,7 @@ class Configuration:
     
     # train on GPU if available
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu' 
+    use_wandb: bool = True
 
     query_folder_test = '/home/xmuairmud/data/SUES-200/test/drone'
     gallery_folder_test = '/home/xmuairmud/data/SUES-200/test/satellite'
@@ -52,20 +57,31 @@ config = Configuration()
 
 
 if __name__ == '__main__':
+    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, logger_name="game4loc.eval.sues")
+    log_run_header(logger, run_mode="test", algorithm_name=config.model)
+    logger.info("自动日志路径: %s", log_path)
+    log_config(logger, config)
+    wandb_run = None
+    if config.use_wandb:
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_sues")
+        wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
     #-----------------------------------------------------------------------------#
         
-    print("\nModel: {}".format(config.model))
+    logger.info("模型: %s", config.model)
 
 
-    model = TimmModel(config.model,
-                          pretrained=True,
-                          img_size=config.img_size)
+    with log_timer(logger, "测试模型初始化", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("eval_sues/model_initialization", run=wandb_run, sync_cuda=True):
+        model = TimmModel(config.model,
+                              pretrained=True,
+                              img_size=config.img_size)
                           
     data_config = model.get_config()
-    print(data_config)
+    logger.debug("模型数据配置: %s", data_config)
     mean = data_config["mean"]
     std = data_config["std"]
     img_size = (config.img_size, config.img_size)
@@ -73,22 +89,22 @@ if __name__ == '__main__':
 
     # load pretrained Checkpoint    
     if config.checkpoint_start is not None:  
-        print("Start from:", config.checkpoint_start)
+        logger.info("加载权重: %s", config.checkpoint_start)
         model_state_dict = torch.load(config.checkpoint_start)  
         model.load_state_dict(model_state_dict, strict=False)     
 
     # Data parallel
-    print("GPUs available:", torch.cuda.device_count())  
+    logger.info("可用 GPU 数量: %s", torch.cuda.device_count())
     if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=config.gpu_ids)
             
     # Model to device   
     model = model.to(config.device)
 
-    print("\nImage Size Query:", img_size)
-    print("Image Size Ground:", img_size)
-    print("Mean: {}".format(mean))
-    print("Std:  {}\n".format(std)) 
+    logger.info("查询图像尺寸: %s", img_size)
+    logger.info("图库图像尺寸: %s", img_size)
+    logger.info("Mean: %s", mean)
+    logger.info("Std: %s", std)
 
 
     #-----------------------------------------------------------------------------#
@@ -96,7 +112,9 @@ if __name__ == '__main__':
     #-----------------------------------------------------------------------------#
 
     # Transforms
-    val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
+    with log_timer(logger, "测试数据加载与构建", level=logging.INFO), \
+         WandbStepTimer("eval_sues/data_loading", run=wandb_run):
+        val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
                                                                                                                                  
     
     # Reference Satellite Images
@@ -125,17 +143,24 @@ if __name__ == '__main__':
                                        shuffle=False,
                                        pin_memory=True)
     
-    print("Query Images Test:", len(query_dataset_test))
-    print("Gallery Images Test:", len(gallery_dataset_test))
+    logger.info("测试查询图像总数: %s", len(query_dataset_test))
+    logger.info("测试图库图像总数: %s", len(gallery_dataset_test))
    
 
-    print("\n{}[{}]{}".format(30*"-", "SUES-200", 30*"-"))  
+    logger.info("%s[SUES-200 测试评估]%s", 30*"-", 30*"-")
 
-    r1_test = evaluate(config=config,
-                       model=model,
-                       query_loader=query_dataloader_test,
-                       gallery_loader=gallery_dataloader_test, 
-                       ranks=[1, 5, 10],
-                       step_size=1000,
-                       cleanup=True)
+    with log_timer(logger, "测试阶段总体评估", level=logging.INFO, sync_cuda=True), \
+         WandbStepTimer("eval_sues/evaluation", run=wandb_run, sync_cuda=True):
+        r1_test = evaluate(config=config,
+                           model=model,
+                           query_loader=query_dataloader_test,
+                           gallery_loader=gallery_dataloader_test, 
+                           ranks=[1, 5, 10],
+                           step_size=1000,
+                           cleanup=True,
+                           wandb_run=wandb_run,
+                           logger=logger)
+    safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
+    logger.info("测试结束，Recall@1=%.4f", float(r1_test) * 100.0)
+    finish_wandb(wandb_run)
  

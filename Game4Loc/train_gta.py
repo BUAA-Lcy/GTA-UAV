@@ -13,7 +13,7 @@ from transformers import get_constant_schedule_with_warmup, get_polynomial_decay
 
 from game4loc.dataset.gta import GTADatasetEval, GTADatasetTrain, get_transforms
 from game4loc.utils import setup_system
-from game4loc.logger_utils import setup_logger, log_config, log_timer
+from game4loc.logger_utils import setup_logger, log_config, log_timer, log_run_header
 from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 from game4loc.trainer.trainer import train, train_with_weight
 from game4loc.evaluate.gta import evaluate
@@ -139,6 +139,7 @@ class Configuration:
 def train_script(config):
     logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG)
     wandb_run = None
+    log_run_header(logger, run_mode="train", algorithm_name=config.model)
 
     save_time = "{}".format(time.strftime("%m%d%H%M%S"))
     model_path = "{}/{}/{}".format(config.model_path,

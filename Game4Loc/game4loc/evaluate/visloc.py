@@ -124,14 +124,27 @@ def evaluate(
         plot_acc_threshold=False,
         top10_log=False,
         with_match=False,
+        wandb_run=None,
+        epoch=None,
+        logger=None,
     ):
-
-    print("Extract Features and Compute Scores:")
+    t_total = time.perf_counter()
+    if logger is not None:
+        logger.info("开始评估：提取特征并计算匹配分数")
+        logger.debug(
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match,
+        )
+    else:
+        print("Extract Features and Compute Scores:")
     model.eval()
+    t_query = time.perf_counter()
     img_features_query = predict(config, model, query_loader)
+    query_extract_time = time.perf_counter() - t_query
     # img_features_gallery = predict(config, model, gallery_loader)
 
     all_scores = []
+    t_gallery = time.perf_counter()
     with torch.no_grad():
         for gallery_batch in gallery_loader:
             with autocast():
@@ -142,8 +155,11 @@ def evaluate(
 
             scores_batch = img_features_query @ gallery_features_batch.T
             all_scores.append(scores_batch.cpu())
+    gallery_infer_time = time.perf_counter() - t_gallery
     
+    t_concat = time.perf_counter()
     all_scores = torch.cat(all_scores, dim=1).numpy()
+    score_concat_time = time.perf_counter() - t_concat
 
     # with image match for finer loc
     if with_match:
@@ -186,6 +202,8 @@ def evaluate(
     dis_ori_list = []
     dis_match_list = []
 
+    t_metrics = time.perf_counter()
+    progress_interval = max(1, query_num // 10)
     for i in tqdm(range(query_num), desc="Processing each query"):
         str_i = query_list[i].split('_')[0]
         score = all_scores[i] * gallery_mapi_idx[str_i]
@@ -239,7 +257,10 @@ def evaluate(
         match_rank = np.where(good_index_i == 1)[0]
         if len(match_rank) > 0:
             cmc[match_rank[0]:] += 1
+        if logger is not None and ((i + 1) % progress_interval == 0 or i == query_num - 1):
+            logger.debug("评估进度：%d/%d (%.1f%%)", i + 1, query_num, (i + 1) * 100.0 / query_num)
     
+    metrics_time = time.perf_counter() - t_metrics
     mAP = np.mean(all_ap)
     cmc = cmc / query_num
 
@@ -262,7 +283,48 @@ def evaluate(
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
 
-    print(' - '.join(string)) 
+    result_str = ' - '.join(string)
+    if logger is not None:
+        logger.info(result_str)
+        logger.info(
+            "评估摘要：Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, AP=%.4f%%",
+            cmc[0] * 100,
+            cmc[4] * 100 if len(cmc) > 4 else -1.0,
+            cmc[9] * 100 if len(cmc) > 9 else -1.0,
+            mAP * 100,
+        )
+        logger.debug(
+            "评估耗时统计：query提取=%.6fs, gallery推理=%.6fs, 分数拼接=%.6fs, 指标计算=%.6fs, 总耗时=%.6fs",
+            query_extract_time,
+            gallery_infer_time,
+            score_concat_time,
+            metrics_time,
+            time.perf_counter() - t_total,
+        )
+    else:
+        print(result_str)
+
+    if wandb_run is not None:
+        log_data = {
+            "eval/recall@1": float(cmc[0] * 100),
+            "eval/mAP": float(mAP * 100),
+            "eval/sdm@1": float(sdm_list[0]) if len(sdm_list) > 0 else 0.0,
+            "eval/dis@1": float(dis_list[0]) if len(dis_list) > 0 else 0.0,
+            "time/eval_visloc/query_extract_s": query_extract_time,
+            "time/eval_visloc/gallery_infer_s": gallery_infer_time,
+            "time/eval_visloc/score_concat_s": score_concat_time,
+            "time/eval_visloc/metrics_s": metrics_time,
+            "time/eval_visloc/total_s": time.perf_counter() - t_total,
+            "eval/query_num": int(query_num),
+            "eval/gallery_num": int(len(gallery_list)),
+        }
+        if len(cmc) > 4:
+            log_data["eval/recall@5"] = float(cmc[4] * 100)
+        if len(cmc) > 9:
+            log_data["eval/recall@10"] = float(cmc[9] * 100)
+        if epoch is not None:
+            log_data["eval/epoch"] = int(epoch)
+        wandb_run.log(log_data)
     
     # cleanup and free memory on GPU
     if cleanup:

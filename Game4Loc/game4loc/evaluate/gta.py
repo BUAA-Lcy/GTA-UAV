@@ -137,6 +137,7 @@ def evaluate(
 
     if logger is not None:
         logger.info("开始提取特征并计算相似度分数")
+        logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s", ranks_list, sdmk_list, disk_list, step_size, with_match)
     else:
         print("Extract Features and Compute Scores:")
     model.eval()
@@ -184,6 +185,8 @@ def evaluate(
     matches_tensor = [torch.tensor(matches, dtype=torch.long) for matches in matches_list]
 
     query_num = img_features_query.shape[0]
+    if logger is not None:
+        logger.info("特征提取完成: 查询特征数量=%d, 图库图像数量=%d", query_num, len(gallery_list))
 
     all_ap = []
     cmc = np.zeros(len(gallery_list))
@@ -198,6 +201,7 @@ def evaluate(
     dis_match_list = []
 
     t_metrics = time.perf_counter()
+    progress_interval = max(1, query_num // 10)
     for i in tqdm(range(query_num), desc="Processing each query"):
         score = all_scores[i]    
         # predict index
@@ -242,6 +246,9 @@ def evaluate(
         match_rank = np.where(good_index_i == 1)[0]
         if len(match_rank) > 0:
             cmc[match_rank[0]:] += 1
+
+        if logger is not None and ((i + 1) % progress_interval == 0 or i == query_num - 1):
+            logger.debug("评估进度: %d/%d (%.1f%%)", i + 1, query_num, (i + 1) * 100.0 / query_num)
     
     metrics_time = time.perf_counter() - t_metrics
     mAP = np.mean(all_ap)
@@ -269,6 +276,13 @@ def evaluate(
     result_str = ' - '.join(string)
     if logger is not None:
         logger.info(result_str)
+        logger.info(
+            "评估结果摘要: Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, mAP=%.4f%%",
+            cmc[0] * 100,
+            cmc[4] * 100 if len(cmc) > 4 else -1.0,
+            cmc[9] * 100 if len(cmc) > 9 else -1.0,
+            mAP * 100,
+        )
         logger.debug(
             "评估耗时统计 查询特征提取=%.6fs 图库推理=%.6fs 分数拼接=%.6fs 指标计算=%.6fs 查询数=%d 图库数=%d",
             query_extract_time,
