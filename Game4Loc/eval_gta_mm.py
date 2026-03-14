@@ -73,7 +73,7 @@ config = Configuration()
 if __name__ == '__main__':
     wandb_run = None
     if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_gta_mm")
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_gta_mm", dataset_name="GTA-UAV", run_type="eval")
         wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
         atexit.register(finish_wandb, wandb_run)
 
@@ -193,5 +193,4 @@ if __name__ == '__main__':
                                wandb_run=wandb_run)
     safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
     finish_wandb(wandb_run)
-
 

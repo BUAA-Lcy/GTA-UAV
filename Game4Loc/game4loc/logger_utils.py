@@ -22,12 +22,18 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _build_log_file_path(algorithm_name: str) -> Path:
+def _build_log_file_path(algorithm_name: str, run_type: str | None = None, dataset_name: str | None = None) -> Path:
     log_dir = _project_root() / "Log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M")
-    base_name = f"{_sanitize_name(algorithm_name)}_{ts}"
+    parts = [_sanitize_name(algorithm_name)]
+    if run_type:
+        parts.append(_sanitize_name(run_type))
+    if dataset_name:
+        parts.append(_sanitize_name(dataset_name))
+    parts.append(ts)
+    base_name = "_".join(parts)
     candidate = log_dir / f"{base_name}.log"
 
     # Keep requested base format and append index only on collisions.
@@ -42,8 +48,10 @@ def setup_logger(
     algorithm_name: str,
     log_level: int = logging.DEBUG,
     logger_name: str = "game4loc",
+    run_type: str | None = None,
+    dataset_name: str | None = None,
 ) -> tuple[logging.Logger, str]:
-    log_file = _build_log_file_path(algorithm_name)
+    log_file = _build_log_file_path(algorithm_name, run_type=run_type, dataset_name=dataset_name)
     logger = logging.getLogger(logger_name)
     logger.setLevel(log_level)
     logger.propagate = False

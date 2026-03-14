@@ -1,0 +1,126 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            kpsj8v79u2o7cxfmzf2jnqemj0ag9ejo:
+                args:
+                    - --data_root
+                    - ./data/GTA-UAV-data
+                    - --test_pairs_meta_file
+                    - same-area-drone2sate-test.json
+                    - --model
+                    - vit_base_patch16_rope_reg1_gap_256.sbb_in1k
+                    - --checkpoint_start
+                    - ./pretrained/gta/vit_base_eva_gta_same_area.pth
+                    - --with_match
+                    - --gpu_ids
+                    - "0"
+                codePath: Game4Loc/eval_gta.py
+                codePathLocal: eval_gta.py
+                cpu_count: 20
+                cpu_count_logical: 20
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "505552060416"
+                email: 1417743380@qq.com
+                executable: /home/lcy/miniconda3/envs/gtauav/bin/python
+                git:
+                    commit: ad85913a334bf30e4b05be58051f51703de54f4e
+                    remote: git@github.com:BUAA-Lcy/GTA-UAV.git
+                gpu: NVIDIA GeForce RTX 5070
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      memoryTotal: "12820938752"
+                      name: NVIDIA GeForce RTX 5070
+                      uuid: GPU-8ce4b3c1-50c7-1e2f-66be-a506b3dd1ace
+                host: Lcy
+                memory:
+                    total: "16438693888"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /home/lcy/Workplace/GTA-UAV/Game4Loc/eval_gta.py
+                python: CPython 3.10.19
+                root: /home/lcy/Workplace/GTA-UAV/Game4Loc/W&B
+                startedAt: "2026-03-13T14:41:48.579059Z"
+                writerId: kpsj8v79u2o7cxfmzf2jnqemj0ag9ejo
+        m: []
+        python_version: 3.10.19
+        t:
+            "1":
+                - 1
+                - 5
+                - 9
+                - 11
+                - 41
+                - 49
+                - 53
+                - 63
+                - 71
+                - 79
+                - 80
+                - 103
+            "2":
+                - 1
+                - 5
+                - 9
+                - 11
+                - 41
+                - 49
+                - 53
+                - 63
+                - 71
+                - 79
+                - 80
+                - 103
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.10.19
+            "5": 0.25.1
+            "6": 5.3.0
+            "10":
+                - 20
+            "12": 0.25.1
+            "13": linux-x86_64
+batch_size:
+    value: 40
+checkpoint_start:
+    value: ./pretrained/gta/vit_base_eva_gta_same_area.pth
+data_root:
+    value: ./data/GTA-UAV-data
+device:
+    value: cuda
+gpu_ids:
+    value:
+        - 0
+img_size:
+    value: 384
+log_path:
+    value: null
+log_to_file:
+    value: false
+model:
+    value: vit_base_patch16_rope_reg1_gap_256.sbb_in1k
+normalize_features:
+    value: true
+num_workers:
+    value: 4
+query_mode:
+    value: D2S
+run_type:
+    value: eval
+share_weights:
+    value: true
+test_mode:
+    value: pos
+test_pairs_meta_file:
+    value: same-area-drone2sate-test.json
+use_wandb:
+    value: true
+verbose:
+    value: true
+with_match:
+    value: true

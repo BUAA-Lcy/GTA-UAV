@@ -137,7 +137,8 @@ class Configuration:
 #-----------------------------------------------------------------------------#
 
 def train_script(config):
-    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG)
+    dataset_name = "GTA-UAV"
+    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, run_type="train", dataset_name=dataset_name)
     wandb_run = None
     log_run_header(logger, run_mode="train", algorithm_name=config.model)
 
@@ -158,7 +159,7 @@ def train_script(config):
     logger.info("训练起始检查点: %s", config.checkpoint_start)
     log_config(logger, config)
     if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, logger=logger)
+        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, logger=logger, dataset_name=dataset_name, run_type="train")
         # 演示核心超参数写入 wandb.config
         wandb_run.config.update(
             {

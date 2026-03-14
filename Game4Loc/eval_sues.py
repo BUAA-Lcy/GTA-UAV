@@ -57,13 +57,13 @@ config = Configuration()
 
 
 if __name__ == '__main__':
-    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, logger_name="game4loc.eval.sues")
+    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, logger_name="game4loc.eval.sues", run_type="eval", dataset_name="SUES")
     log_run_header(logger, run_mode="test", algorithm_name=config.model)
     logger.info("自动日志路径: %s", log_path)
     log_config(logger, config)
     wandb_run = None
     if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_sues")
+        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval_sues", dataset_name="SUES", run_type="eval")
         wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
         atexit.register(finish_wandb, wandb_run)
 

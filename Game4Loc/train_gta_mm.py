@@ -163,7 +163,7 @@ def train_script(config):
 
     print("training start from", config.checkpoint_start)
     if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=config.model)
+        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, dataset_name="GTA-UAV", run_type="train")
         wandb_run.config.update({"learning_rate": config.lr, "batch_size": config.batch_size}, allow_val_change=True)
         atexit.register(finish_wandb, wandb_run)
         safe_log(wandb_run, {"meta/model_path": model_path})
