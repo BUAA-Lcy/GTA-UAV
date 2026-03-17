@@ -3,6 +3,7 @@ import numpy as np
 from tqdm import tqdm
 import gc
 import time
+from collections import OrderedDict
 from torch.cuda.amp import autocast
 import torch.nn.functional as F
 from sklearn.metrics import average_precision_score
@@ -130,6 +131,7 @@ def evaluate(
         plot_acc_threshold=False,
         top10_log=False,
         with_match=False,
+        match_mode="sparse",
         logger=None,
         wandb_run=None,
         epoch=None,
@@ -137,7 +139,7 @@ def evaluate(
 
     if logger is not None:
         logger.info("开始提取特征并计算相似度分数")
-        logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s", ranks_list, sdmk_list, disk_list, step_size, with_match)
+        logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s", ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode)
     else:
         print("Extract Features and Compute Scores:")
     model.eval()
@@ -166,7 +168,9 @@ def evaluate(
 
     # with image match for finer loc
     if with_match:
-        matcher = GimDKM(device=config.device, logger=logger)
+        matcher = GimDKM(device=config.device, logger=logger, match_mode=match_mode)
+        gallery_img_cache = OrderedDict()
+        gallery_img_cache_size = 512
 
     ap = 0.0
 
@@ -211,7 +215,17 @@ def evaluate(
         # with image match for finer loc
         match_loc = None
         if with_match:
-            match_loc = matcher.est_center(gallery_loader.dataset[top1_index], query_loader.dataset[i], 
+            # 查询图每个 index 只用一次；图库 top1 在多查询中会复用，使用轻量 LRU 减少磁盘读图次数。
+            if top1_index in gallery_img_cache:
+                gallery_img = gallery_img_cache.pop(top1_index)
+                gallery_img_cache[top1_index] = gallery_img
+            else:
+                gallery_img = gallery_loader.dataset[top1_index]
+                gallery_img_cache[top1_index] = gallery_img
+                if len(gallery_img_cache) > gallery_img_cache_size:
+                    gallery_img_cache.popitem(last=False)
+
+            match_loc = matcher.est_center(gallery_img, query_loader.dataset[i], 
                 gallery_center_loc_xy_list[top1_index], gallery_topleft_loc_xy_list[top1_index])
             dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc))
         else:

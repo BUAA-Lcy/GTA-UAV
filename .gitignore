@@ -202,4 +202,5 @@ Game4Loc/university/
 Game4Loc/train_private.sh
 
 *.out
-
+W&B/
+Log/

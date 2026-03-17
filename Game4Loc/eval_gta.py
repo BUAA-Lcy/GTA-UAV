@@ -5,6 +5,7 @@ import torch
 import argparse
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
+from torch.utils.data import Subset
 
 from game4loc.dataset.gta import GTADatasetEval, get_transforms
 from game4loc.evaluate.gta import evaluate
@@ -38,6 +39,7 @@ class Configuration:
 
     # With Fine Matching
     with_match: bool = False
+    match_mode: str = "sparse"
 
     # set num_workers to 0 if on Windows
     num_workers: int = 0 if os.name == 'nt' else 4 
@@ -73,6 +75,8 @@ def eval_script(config):
     logger.info("自动日志路径: %s", log_path)
     logger.info("评估区域模式: %s-area", area_tag)
     logger.info("匹配模块: %s", "开启" if config.with_match else "关闭")
+    if config.with_match:
+        logger.info("with_match 子步骤模式: %s", config.match_mode)
     log_config(logger, config)
     if config.use_wandb:
         wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval", logger=logger, dataset_name=dataset_tagged, run_type="eval")
@@ -164,8 +168,18 @@ def eval_script(config):
                                                 sate_img_dir=config.sate_img_dir,
                                                 mode='pos',
                                             )
-    query_img_list = query_dataset_test.images_name
-    query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
+    # Optional limit on number of queries for quick evaluation
+    if config.query_limit is not None and config.query_limit > 0:
+        query_indices = list(range(min(config.query_limit, len(query_dataset_test))))
+        query_dataset_test = Subset(query_dataset_test, query_indices)
+        # derive lists from subset
+        full_q_names = getattr(query_dataset_test.dataset, "images_name", [])
+        full_q_locs = getattr(query_dataset_test.dataset, "images_center_loc_xy", [])
+        query_img_list = [full_q_names[i] for i in query_indices]
+        query_center_loc_xy_list = [full_q_locs[i] for i in query_indices]
+    else:
+        query_img_list = query_dataset_test.images_name
+        query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
 
     gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
     gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
@@ -200,25 +214,28 @@ def eval_script(config):
     logger.info("%s[开始 GTA-UAV 测试评估]%s", 30*"-", 30*"-")
     with log_timer(logger, "测试阶段总体评估", level=logging.INFO, sync_cuda=True), \
          WandbStepTimer("eval_gta/evaluation", logger=logger, run=wandb_run, sync_cuda=True):
-        r1_test = evaluate(config=config,
-                               model=model,
-                               query_loader=query_dataloader_test,
-                               gallery_loader=gallery_dataloader_test,
-                               query_list=query_img_list,
-                               gallery_list=gallery_img_list,
-                               pairs_dict=pairs_dict,
-                               ranks_list=[1, 5, 10],
-                               query_center_loc_xy_list=query_center_loc_xy_list,
-                               gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                               gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
-                               step_size=1000,
-                               dis_threshold_list=dis_threshold_list,
-                               cleanup=True,
-                               plot_acc_threshold=False,
-                               top10_log=False,
-                               with_match=config.with_match,
-                               logger=logger,
-                               wandb_run=wandb_run)
+        r1_test = evaluate(
+            config=config,
+            model=model,
+            query_loader=query_dataloader_test,
+            gallery_loader=gallery_dataloader_test,
+            query_list=query_img_list,
+            gallery_list=gallery_img_list,
+            pairs_dict=pairs_dict,
+            ranks_list=[1, 5, 10],
+            query_center_loc_xy_list=query_center_loc_xy_list,
+            gallery_center_loc_xy_list=gallery_center_loc_xy_list,
+            gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+            step_size=1000,
+            dis_threshold_list=dis_threshold_list,
+            cleanup=True,
+            plot_acc_threshold=False,
+            top10_log=False,
+            with_match=config.with_match,
+            match_mode=config.match_mode,
+            logger=logger,
+            wandb_run=wandb_run,
+        )
     logger.info("测试结束，Recall@1=%.4f", r1_test * 100.0)
     safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
     finish_wandb(wandb_run, logger=logger)
@@ -241,6 +258,11 @@ def parse_args():
     parser.add_argument('--no_share_weights', action='store_true', help='Model not sharing wieghts')
 
     parser.add_argument('--with_match', action='store_true', help='Test with post-process image matching (GIM, etc)')
+    match_group = parser.add_mutually_exclusive_group()
+    match_group.add_argument('--dense', dest='match_mode', action='store_const', const='dense', help='Use dense matching in with_match step (original behavior)')
+    match_group.add_argument('--sparse', dest='match_mode', action='store_const', const='sparse', help='Use sparse fast path in with_match step')
+    parser.set_defaults(match_mode='sparse')
+    parser.add_argument('--query_limit', type=int, default=0, help='Limit the number of queries for quick evaluation (0 for all)')
 
     parser.add_argument('--gpu_ids', type=parse_tuple, default=(0,1), help='GPU ID')
 
@@ -273,6 +295,8 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.with_match = args.with_match
+    config.match_mode = args.match_mode
+    config.query_limit = args.query_limit
     config.use_wandb = not(args.no_wandb)
 
     eval_script(config)
