@@ -175,11 +175,14 @@ def eval_script(config):
         # derive lists from subset
         full_q_names = getattr(query_dataset_test.dataset, "images_name", [])
         full_q_locs = getattr(query_dataset_test.dataset, "images_center_loc_xy", [])
+        full_q_yaws = getattr(query_dataset_test.dataset, "images_yaw", [])
         query_img_list = [full_q_names[i] for i in query_indices]
         query_center_loc_xy_list = [full_q_locs[i] for i in query_indices]
+        query_yaw_list = [full_q_yaws[i] for i in query_indices] if len(full_q_yaws) > 0 else None
     else:
         query_img_list = query_dataset_test.images_name
         query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
+        query_yaw_list = getattr(query_dataset_test, "images_yaw", None)
 
     gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
     gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
@@ -224,6 +227,7 @@ def eval_script(config):
             pairs_dict=pairs_dict,
             ranks_list=[1, 5, 10],
             query_center_loc_xy_list=query_center_loc_xy_list,
+            query_yaw_list=query_yaw_list,
             gallery_center_loc_xy_list=gallery_center_loc_xy_list,
             gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
             step_size=1000,

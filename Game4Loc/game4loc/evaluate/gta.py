@@ -122,6 +122,7 @@ def evaluate(
         gallery_center_loc_xy_list,
         gallery_topleft_loc_xy_list,
         pairs_dict,
+        query_yaw_list=None,
         ranks_list=[1, 5, 10],
         sdmk_list=[1, 3, 5],
         disk_list=[1, 3, 5],
@@ -191,6 +192,48 @@ def evaluate(
     query_num = img_features_query.shape[0]
     if logger is not None:
         logger.info("特征提取完成: 查询特征数量=%d, 图库图像数量=%d", query_num, len(gallery_list))
+        if with_match and match_mode == "sparse":
+            if query_yaw_list is None:
+                logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验")
+            else:
+                valid_yaws = []
+                invalid_count = 0
+                for y in query_yaw_list:
+                    if y is None:
+                        invalid_count += 1
+                        continue
+                    try:
+                        yf = float(y)
+                    except (TypeError, ValueError):
+                        invalid_count += 1
+                        continue
+                    if not np.isfinite(yf):
+                        invalid_count += 1
+                        continue
+                    valid_yaws.append(yf)
+
+                if len(valid_yaws) == 0:
+                    logger.warning(
+                        "sparse yaw 检查: 全部无效，总数=%d 无效=%d",
+                        len(query_yaw_list),
+                        invalid_count,
+                    )
+                else:
+                    yaw_arr = np.asarray(valid_yaws, dtype=np.float32)
+                    near_zero_ratio = float(np.mean(np.abs(yaw_arr) < 1e-3))
+                    logger.info(
+                        "sparse yaw 统计: 总数=%d 有效=%d 无效=%d min=%.3f max=%.3f mean=%.3f near_zero_ratio=%.3f sample=%s",
+                        len(query_yaw_list),
+                        int(yaw_arr.shape[0]),
+                        invalid_count,
+                        float(np.min(yaw_arr)),
+                        float(np.max(yaw_arr)),
+                        float(np.mean(yaw_arr)),
+                        near_zero_ratio,
+                        str([round(float(v), 3) for v in yaw_arr[:5]]),
+                    )
+                    if near_zero_ratio > 0.9:
+                        logger.warning("sparse yaw 检查: 超过90%%样本接近0度，建议确认 yaw 字段映射是否正确")
 
     all_ap = []
     cmc = np.zeros(len(gallery_list))
@@ -225,8 +268,20 @@ def evaluate(
                 if len(gallery_img_cache) > gallery_img_cache_size:
                     gallery_img_cache.popitem(last=False)
 
-            match_loc = matcher.est_center(gallery_img, query_loader.dataset[i], 
-                gallery_center_loc_xy_list[top1_index], gallery_topleft_loc_xy_list[top1_index])
+            sparse_yaw0 = None
+            sparse_yaw1 = None
+            if match_mode == "sparse" and query_yaw_list is not None and i < len(query_yaw_list):
+                # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
+                sparse_yaw0 = 0.0
+                sparse_yaw1 = query_yaw_list[i]
+            match_loc = matcher.est_center(
+                gallery_img,
+                query_loader.dataset[i],
+                gallery_center_loc_xy_list[top1_index],
+                gallery_topleft_loc_xy_list[top1_index],
+                yaw0=sparse_yaw0,
+                yaw1=sparse_yaw1,
+            )
             dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc))
         else:
             dis_match_list.append(None)

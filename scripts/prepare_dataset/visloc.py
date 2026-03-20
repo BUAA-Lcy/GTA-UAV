@@ -694,9 +694,9 @@ if __name__ == '__main__':
 
     ############################################################
     ## UAV-VisLoc dataset root, please change it
-    root = '/home/xmuairmud/data/UAV_VisLoc_dataset'
+    root = '/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset'
     ## Saving directory, please change it
-    save_root = '/home/xmuairmud/data/UAV_VisLoc_dataset/same_area'
+    save_root = '/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/same_area'
     ## Mode (cross-area / same-area)
     split_type = 'same-area'
 
