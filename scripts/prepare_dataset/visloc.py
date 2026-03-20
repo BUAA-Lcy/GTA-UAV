@@ -131,7 +131,7 @@ def process_tile(args):
 def tile_satellite(root_dir):
     
     for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
+        if i not in TRAIN_LIST and i not in TEST_LIST:
             continue
         file_dir = os.path.join(root_dir, f'{i:02}')
         tile_dir = os.path.join(file_dir, 'tile')
@@ -186,7 +186,7 @@ def copy_satellite(root_dir):
     os.makedirs(dst_dir, exist_ok=True)
 
     for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
+        if i not in TRAIN_LIST and i not in TEST_LIST:
                 continue
         file_dir = os.path.join(root_dir, f'{i:02}')
         tile_dir = os.path.join(file_dir, 'tile')
@@ -213,7 +213,7 @@ def copy_drone(root_dir):
     os.makedirs(dst_dir, exist_ok=True)
 
     for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
+        if i not in TRAIN_LIST and i not in TEST_LIST:
                 continue
         file_dir = os.path.join(root_dir, f'{i:02}', 'drone')
         for file_name in os.listdir(file_dir):
@@ -532,7 +532,15 @@ def process_visloc_data(root, save_root, split_type):
     if not os.path.exists(save_root):
         os.mkdir(save_root)
 
-    sate_meta_file = os.path.join(root, 'satellite_coordinates_range.csv')
+    sate_meta_file_candidates = [
+        os.path.join(root, 'satellite_coordinates_range.csv'),
+        os.path.join(root, 'satellite_ coordinates_range.csv'),
+    ]
+    sate_meta_file = next((p for p in sate_meta_file_candidates if os.path.exists(p)), None)
+    if sate_meta_file is None:
+        raise FileNotFoundError(
+            f"Cannot find satellite coordinates CSV under {root}. Tried: {', '.join(os.path.basename(p) for p in sate_meta_file_candidates)}"
+        )
     sate_meta_data = {}
     with open(sate_meta_file, newline='') as csvfile:
         csvreader = csv.reader(csvfile, delimiter=',')
@@ -736,4 +744,3 @@ if __name__ == '__main__':
     ##   |--cross-area-drone2sate-train.json
     ##   |--cross-area-drone2sate-test.json
     process_visloc_data(root, save_root, split_type)
-
