@@ -16,6 +16,7 @@ import concurrent.futures
 import itertools
 import pickle
 import json
+import torch
 
 
 SATE_LENGTH = 24576
@@ -69,6 +70,15 @@ class GTADatasetTrain(Dataset):
             drone_img_dir = pair_drone2sate['drone_img_dir']
             drone_img_name = pair_drone2sate['drone_img_name']
             sate_img_dir = pair_drone2sate['sate_img_dir']
+            
+            # Extract pose info
+            drone_meta = pair_drone2sate.get('drone_metadata', {})
+            # Remove fallback values to ensure we fail fast if pose is missing
+            height = drone_meta['height']
+            cam_pitch = drone_meta['cam_pitch']
+            cam_roll = drone_meta['cam_roll']
+            query_pose = (height, cam_pitch, cam_roll)
+            
             # Training with Positive-only data or Positive+Semi-positive data
             pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
             pair_sate_weight_list = pair_drone2sate[f'pair_{mode}_sate_weight_list']
@@ -77,7 +87,7 @@ class GTADatasetTrain(Dataset):
 
             for pair_sate_img, pair_sate_weight in zip(pair_sate_img_list, pair_sate_weight_list):
                 sate_img_file = os.path.join(data_root, sate_img_dir, pair_sate_img)
-                self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight))
+                self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight, query_pose))
 
             # Build Graph with All Edges (drone, sate)
             pair_all_sate_img_list = pair_drone2sate['pair_pos_semipos_sate_img_list']
@@ -101,7 +111,7 @@ class GTADatasetTrain(Dataset):
     
     def __getitem__(self, index):
         
-        query_img_path, gallery_img_path, positive_weight = self.samples[index]
+        query_img_path, gallery_img_path, positive_weight, query_pose = self.samples[index]
         
         # for query there is only one file in folder
         query_img = cv2.imread(query_img_path)
@@ -113,6 +123,8 @@ class GTADatasetTrain(Dataset):
         if np.random.random() < self.prob_flip:
             query_img = cv2.flip(query_img, 1)
             gallery_img = cv2.flip(gallery_img, 1) 
+            # Note: If image is flipped horizontally, roll should be inverted for geometric consistency
+            query_pose = (query_pose[0], query_pose[1], -query_pose[2])
         
         # image transforms
         if self.transforms_query is not None:
@@ -120,8 +132,10 @@ class GTADatasetTrain(Dataset):
             
         if self.transforms_gallery is not None:
             gallery_img = self.transforms_gallery(image=gallery_img)['image']
+            
+        query_pose_tensor = torch.tensor(query_pose, dtype=torch.float32)
         
-        return query_img, gallery_img, positive_weight    # , query_loc_xy/NORM_LOC, gallery_loc_xy/NORM_LOC
+        return query_img, gallery_img, positive_weight, query_pose_tensor
 
     def __len__(self):
         return len(self.samples)
@@ -158,7 +172,7 @@ class GTADatasetTrain(Dataset):
 
                 pair = pair_pool.pop(0)
                 
-                drone_img_path, sate_img_path, _ = pair
+                drone_img_path, sate_img_path, _, query_pose = pair
                 drone_img_dir = os.path.dirname(drone_img_path)
                 sate_img_dir = os.path.dirname(sate_img_path)
 
@@ -227,7 +241,7 @@ class GTADatasetTrain(Dataset):
                     for drone_img_name, sate_img_name in zip(subset_drone, subset_sate):
                         drone_img_path = os.path.join(self.data_root, drone_img_dir, drone_img_name)
                         sate_img_path = os.path.join(self.data_root, sate_img_dir, sate_img_name)
-                        current_batch.append((drone_img_path, sate_img_path, 1.0))
+                        current_batch.append((drone_img_path, sate_img_path, 1.0, query_pose))
                         pairs_epoch.add((drone_img_name, sate_img_name))
                     for drone_img in subset_drone:
                         pairs_drone2sate = self.pairs_drone2sate_dict[drone_img_name]
@@ -297,7 +311,7 @@ class GTADatasetTrain(Dataset):
             if len(pair_pool) > 0:
                 pair = pair_pool.pop(0)
                 
-                drone_img, sate_img, _ = pair
+                drone_img, sate_img, _, query_pose = pair
                 drone_img_name = drone_img.split('/')[-1]
                 sate_img_name = sate_img.split('/')[-1]
                 # print(sate_img_name)
@@ -376,6 +390,7 @@ class GTADatasetEval(Dataset):
         self.images_yaw = []
         # For finer localization with image matching
         self.images_topleft_loc_xy = []
+        self.images_pose = []
 
         self.pairs_sate2drone_dict = {}
         self.pairs_drone2sate_dict = {}
@@ -391,6 +406,14 @@ class GTADatasetEval(Dataset):
                     drone_meta = {}
                 # Compatible with both old(flat) and new(nested metadata) schema.
                 drone_yaw = pair_drone2sate.get('drone_yaw', drone_meta.get('drone_yaw', drone_meta.get('cam_yaw', None)))
+                
+                # Extract pose
+                # Remove fallback values to ensure we fail fast if pose is missing
+                height = drone_meta['height']
+                cam_pitch = drone_meta['cam_pitch']
+                cam_roll = drone_meta['cam_roll']
+                query_pose = (height, cam_pitch, cam_roll)
+                
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:
@@ -402,6 +425,7 @@ class GTADatasetEval(Dataset):
                     self.images_name.append(drone_img_name)
                     self.images_center_loc_xy.append((drone_loc_x_y[0], drone_loc_x_y[1]))
                     self.images_yaw.append(drone_yaw)
+                    self.images_pose.append(query_pose)
 
         elif view == 'sate':
             if query_mode == 'D2S':
@@ -451,6 +475,11 @@ class GTADatasetEval(Dataset):
         # image transforms
         if self.transforms is not None:
             img = self.transforms(image=img)['image']
+            
+        if len(self.images_pose) > 0:
+            query_pose = self.images_pose[index]
+            query_pose_tensor = torch.tensor(query_pose, dtype=torch.float32)
+            return img, query_pose_tensor
         
         return img
 

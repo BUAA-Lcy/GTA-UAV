@@ -88,12 +88,20 @@ def predict(train_config, model, dataloader):
     
     with torch.no_grad():
         
-        for img in bar:
+        for img_data in bar:
                     
+            if isinstance(img_data, (list, tuple)) and len(img_data) == 2:
+                img, pose = img_data
+            else:
+                img = img_data
+                pose = None
+                
             with autocast():
             
                 img = img.to(train_config.device)
-                img_feature = model(img1=img)
+                if pose is not None:
+                    pose = pose.to(train_config.device)
+                img_feature = model(img1=img, pose=pose)
             
                 # normalize is calculated in fp32
                 if train_config.normalize_features:

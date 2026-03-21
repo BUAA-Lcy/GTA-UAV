@@ -22,8 +22,17 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _build_log_file_path(algorithm_name: str, run_type: str | None = None, dataset_name: str | None = None) -> Path:
-    log_dir = _project_root() / "Log"
+def _build_log_file_path(
+    algorithm_name: str,
+    run_type: str | None = None,
+    dataset_name: str | None = None,
+    log_dir: str | Path | None = None,
+) -> Path:
+    if log_dir is None:
+        log_dir = _project_root() / "Log"
+    else:
+        log_dir = Path(log_dir)
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M")
@@ -50,8 +59,14 @@ def setup_logger(
     logger_name: str = "game4loc",
     run_type: str | None = None,
     dataset_name: str | None = None,
+    log_dir: str | Path | None = None,
 ) -> tuple[logging.Logger, str]:
-    log_file = _build_log_file_path(algorithm_name, run_type=run_type, dataset_name=dataset_name)
+    log_file = _build_log_file_path(
+        algorithm_name,
+        run_type=run_type,
+        dataset_name=dataset_name,
+        log_dir=log_dir,
+    )
     logger = logging.getLogger(logger_name)
     logger.setLevel(log_level)
     logger.propagate = False

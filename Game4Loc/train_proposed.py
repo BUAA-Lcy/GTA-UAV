@@ -2,7 +2,7 @@ import os
 import time
 import math
 import shutil
-import logging
+import sys
 import atexit
 import torch
 import argparse
@@ -11,15 +11,13 @@ from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from transformers import get_constant_schedule_with_warmup, get_polynomial_decay_schedule_with_warmup, get_cosine_schedule_with_warmup
 
-from game4loc.dataset.gta import GTADatasetEval, GTADatasetTrain, get_transforms
-from game4loc.utils import setup_system
-from game4loc.logger_utils import setup_logger, log_config, log_timer, log_run_header
-from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
+from game4loc.dataset.gta_rgbd import GTARGBDDatasetEval, GTARGBDDatasetTrain, get_transforms
+from game4loc.utils import setup_system, Logger
 from game4loc.trainer.trainer import train, train_with_weight
-from game4loc.evaluate.gta import evaluate
+from game4loc.evaluate.gta_rgbd import evaluate
 from game4loc.loss import InfoNCE, WeightedInfoNCE, GroupInfoNCE, TripletLoss
-from game4loc.models.model import DesModel
-from game4loc.models.model_netvlad import DesModelWithVLAD
+from game4loc.models.model_rgbd import DesModelWithRGBD
+from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 
 def parse_tuple(s):
@@ -35,7 +33,7 @@ class Configuration:
     # Model
     model: str = 'convnext_base.fb_in22k_ft_in1k_384'
     model_hub: str = 'timm'
-    with_netvlad: bool = False
+    global_pool: str = 'avg'
     
     # Override model image size
     img_size: int = 384
@@ -61,6 +59,7 @@ class Configuration:
     # Please Ignore
     train_with_recon: bool = False
     recon_weight: float = 0.1
+    
     
     # Training 
     mixed_precision: bool = True
@@ -88,6 +87,9 @@ class Configuration:
     # Loss
     label_smoothing: float = 0.1
     k: float = 3
+
+    # Differential train
+    diff_guidance: float = 0.0
     
     # Learning Rate
     lr: float = 0.001                    # 1 * 10^-4 for ViT | 1 * 10^-1 for CNN
@@ -110,12 +112,7 @@ class Configuration:
     # Eval before training
     zero_shot: bool = True
     
-    # Pose Attention Prior
-    use_pose_attention: bool = False
-    pose_attn_floor: float = 0.3
-    pose_gate_mode: str = "multiplicative"
-    pose_gate_lambda: float = 0.5
-    pose_gate_insert_stage: str = "pre_blocks"
+    # Checkpoint to start from
     checkpoint_start = None
 
     # set num_workers to 0 if on Windows
@@ -142,10 +139,11 @@ class Configuration:
 #-----------------------------------------------------------------------------#
 
 def train_script(config):
-    dataset_name = "GTA-UAV"
-    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, run_type="train", dataset_name=dataset_name, log_dir=config.log_path)
     wandb_run = None
-    log_run_header(logger, run_mode="train", algorithm_name=config.model)
+
+    if config.log_to_file:
+        f = open(config.log_path, 'w')
+        sys.stdout = f
 
     save_time = "{}".format(time.strftime("%m%d%H%M%S"))
     model_path = "{}/{}/{}".format(config.model_path,
@@ -154,69 +152,42 @@ def train_script(config):
 
     if not os.path.exists(model_path):
         os.makedirs(model_path)
-    shutil.copyfile(os.path.abspath(__file__), "{}/train.py".format(model_path))
+    shutil.copyfile(os.path.basename(__file__), "{}/train.py".format(model_path))
+
+    # Redirect print to both console and log file
+    sys.stdout = Logger(os.path.join(model_path, 'log.txt'))
 
     setup_system(seed=config.seed,
                  cudnn_benchmark=config.cudnn_benchmark,
                  cudnn_deterministic=config.cudnn_deterministic)
     
-    # 强制覆盖默认的 "Log/" 路径逻辑已在 main 函数中处理
-    logger.info("训练输出目录: %s", model_path)
-    logger.info("自动日志路径: %s", log_path)
-    logger.info("训练起始检查点: %s", config.checkpoint_start)
-    log_config(logger, config)
+    print("training save in path: {}".format(model_path))
+
+    print("training start from", config.checkpoint_start)
     if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, logger=logger, dataset_name=dataset_name, run_type="train")
-        # 演示核心超参数写入 wandb.config
-        wandb_run.config.update(
-            {
-                "learning_rate": config.lr,
-                "batch_size": config.batch_size,
-            },
-            allow_val_change=True,
-        )
-        atexit.register(finish_wandb, wandb_run, logger)
-        safe_log(
-            wandb_run,
-            {
-                "meta/log_path": log_path,
-                "meta/model_path": model_path,
-            },
-        )
+        wandb_run = init_wandb_run(config=config, algorithm_name=config.model, dataset_name="GTA-UAV", run_type="train")
+        wandb_run.config.update({"learning_rate": config.lr, "batch_size": config.batch_size}, allow_val_change=True)
+        atexit.register(finish_wandb, wandb_run)
+        safe_log(wandb_run, {"meta/model_path": model_path})
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
     #-----------------------------------------------------------------------------#
-    logger.info("模型: %s", config.model)
-    logger.info("Use pose attention: %s", config.use_pose_attention)
-    if config.use_pose_attention:
-        logger.info("Pose Attention Config: floor=%.2f, mode=%s, lambda=%.2f, insert_stage=%s", 
-                    config.pose_attn_floor, config.pose_gate_mode, config.pose_gate_lambda, config.pose_gate_insert_stage)
+    print("\nModel: {}".format(config.model))
+    print(f"Drone and satellite image encoder share weights? {config.share_weights}")
 
-    with log_timer(logger, "model_initialization", level=logging.INFO, sync_cuda=True), \
-         WandbStepTimer("model_initialization", logger=logger, run=wandb_run, sync_cuda=True):
-        if config.with_netvlad:
-            model = DesModelWithVLAD(model_name=config.model,
+    with WandbStepTimer("train_rgbd/model_initialization", run=wandb_run, sync_cuda=True):
+        model = DesModelWithRGBD(model_name=config.model, 
                         pretrained=True,
                         img_size=config.img_size,
-                        share_weights=config.share_weights)
-        else:
-            model = DesModel(model_name=config.model,
-                            pretrained=True,
-                            img_size=config.img_size,
-                            share_weights=config.share_weights)
-        
-        # Enable pose attention if configured
-        model.use_pose_attention = config.use_pose_attention
-        model.pose_attn_floor = config.pose_attn_floor
-        model.pose_gate_mode = config.pose_gate_mode
-        model.pose_gate_lambda = config.pose_gate_lambda
-        model.pose_gate_insert_stage = config.pose_gate_insert_stage
-                        
+                        share_weights=config.share_weights,
+                        diff_guidance=config.diff_guidance,
+                        global_pool=config.global_pool)
+
     data_config = model.get_config()
-    logger.debug("Model data config: %s", data_config)
-    mean = data_config["mean"]
-    std = data_config["std"]
+    print(data_config)
+    mean = list(data_config["mean"])
+    std = list(data_config["std"])
     img_size = (config.img_size, config.img_size)
     
     # Activate gradient checkpointing
@@ -225,110 +196,116 @@ def train_script(config):
     
     # Load pretrained Checkpoint    
     if config.checkpoint_start is not None:  
-        with log_timer(logger, "load_checkpoint", level=logging.INFO, sync_cuda=True):
-            logger.info("加载检查点: %s", config.checkpoint_start)
-            model_state_dict = torch.load(config.checkpoint_start)
-            model.load_state_dict(model_state_dict, strict=False)
+        print("Start from:", config.checkpoint_start)
+        model_state_dict = torch.load(config.checkpoint_start)  
+        model_state_dict_new = {}
+        for k, v in model_state_dict.items():
+            model_state_dict_new[k.replace('model.', '')] = v
+        model.model.vit_model.load_state_dict(model_state_dict_new, strict=False)
+    
 
-    logger.info("是否冻结模型层: %s, 冻结阶段: %s", config.freeze_layers, config.frozen_stages)
+    print("Freeze model layers:", config.freeze_layers, config.frozen_stages)
     if config.freeze_layers:
         model.freeze_layers(config.frozen_stages)
 
     # Data parallel
-    logger.info("可用 GPU 数量: %s", torch.cuda.device_count())
+    print("GPUs available:", torch.cuda.device_count())  
     if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=config.gpu_ids)
             
     # Model to device   
     model = model.to(config.device)
 
-    logger.info("查询图像尺寸: %s", img_size)
-    logger.info("图库图像尺寸: %s", img_size)
-    logger.info("归一化均值 Mean: %s", mean)
-    logger.info("归一化方差 Std: %s", std)
+    print("\nImage Size Query:", img_size)
+    print("Image Size Ground:", img_size)
+    print("Mean: {}".format(mean))
+    print("Std:  {}\n".format(std)) 
 
-    logger.info("是否使用自定义采样: %s", config.custom_sampling)
+    print("Use custom sampling: {}".format(config.custom_sampling))
 
 
     #-----------------------------------------------------------------------------#
     # DataLoader                                                                  #
     #-----------------------------------------------------------------------------#
 
-    with log_timer(logger, "data_loading", level=logging.INFO), \
-         WandbStepTimer("data_loading", logger=logger, run=wandb_run):
-        if 'cross-area' in config.train_pairs_meta_file:
-            sat_rot = True
-        else:
-            sat_rot = False
-        val_transforms, train_sat_transforms, train_drone_transforms = \
-            get_transforms(img_size, mean=mean, std=std, sat_rot=sat_rot)
-
-        train_dataset = GTADatasetTrain(data_root=config.data_root,
-                                        pairs_meta_file=config.train_pairs_meta_file,
-                                        transforms_query=train_drone_transforms,
-                                        transforms_gallery=train_sat_transforms,
-                                        group_len=config.group_len,
-                                        prob_flip=config.prob_flip,
-                                        shuffle_batch_size=config.batch_size,
-                                        mode=config.train_mode,
-                                        train_ratio=config.train_ratio,
-                                        )
-
-        train_dataloader = DataLoader(train_dataset,
-                                      batch_size=config.batch_size,
-                                      num_workers=config.num_workers,
-                                      shuffle=not config.custom_sampling,
-                                      pin_memory=True)
-
-        if config.query_mode == 'D2S':
-            query_view = 'drone'
-            gallery_view = 'sate'
-        else:
-            query_view = 'sate'
-            gallery_view = 'drone'
-        query_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                            pairs_meta_file=config.test_pairs_meta_file,
-                                            view=query_view,
-                                            transforms=val_transforms,
-                                            mode=config.test_mode,
-                                            sate_img_dir=config.sate_img_dir,
-                                            query_mode=config.query_mode,
-                                            )
-        query_img_list = query_dataset_test.images_name
-        query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
-        pairs_drone2sate_dict = query_dataset_test.pairs_drone2sate_dict
-
-        query_dataloader_test = DataLoader(query_dataset_test,
-                                           batch_size=config.batch_size_eval,
-                                           num_workers=config.num_workers,
-                                           shuffle=False,
-                                           pin_memory=True)
-
-        gallery_dataset_test = GTADatasetEval(data_root=config.data_root,
-                                              pairs_meta_file=config.test_pairs_meta_file,
-                                              view=gallery_view,
-                                              transforms=val_transforms,
-                                              mode=config.test_mode,
-                                              sate_img_dir=config.sate_img_dir,
-                                              query_mode=config.query_mode,
-                                             )
-        gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
-        gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
-        gallery_img_list = gallery_dataset_test.images_name
-
-        gallery_dataloader_test = DataLoader(gallery_dataset_test,
-                                           batch_size=config.batch_size_eval,
-                                           num_workers=config.num_workers,
-                                           shuffle=False,
-                                           pin_memory=True)
+    # Transforms
+    with WandbStepTimer("train_rgbd/data_loading", run=wandb_run):
+        val_sat_transforms, val_drone_rgb_transforms, val_drone_depth_transforms, train_sat_transforms, \
+            train_drone_geo_transforms, train_drone_rgb_transforms, train_drone_depth_transforms \
+             = get_transforms(img_size, mean=mean, std=std)
+                                                                                                                                 
+    # Train
+    train_dataset = GTARGBDDatasetTrain(data_root=config.data_root,
+                                    pairs_meta_file=config.train_pairs_meta_file,
+                                    transforms_query_geo=train_drone_geo_transforms,
+                                    transforms_query_rgb=train_drone_rgb_transforms,
+                                    transforms_query_depth=train_drone_depth_transforms,
+                                    transforms_gallery=train_sat_transforms,
+                                    prob_flip=config.prob_flip,
+                                    prob_drop_depth=0.2,
+                                    prob_drop_rgb=0.0,
+                                    shuffle_batch_size=config.batch_size,
+                                    mode=config.train_mode,
+                                    train_ratio=config.train_ratio,
+                                    )
     
-    logger.info("测试查询集图像数: %s", len(query_dataset_test))
-    logger.info("测试图库图像数: %s", len(gallery_dataset_test))
+    train_dataloader = DataLoader(train_dataset,
+                                  batch_size=config.batch_size,
+                                  num_workers=config.num_workers,
+                                  shuffle=not config.custom_sampling,
+                                  pin_memory=True)
+    
+    # Test query
+    if config.query_mode == 'D2S':
+        query_view = 'drone'
+        gallery_view = 'sate'
+    else:
+        query_view = 'sate'
+        gallery_view = 'drone'
+    query_dataset_test = GTARGBDDatasetEval(data_root=config.data_root,
+                                        pairs_meta_file=config.test_pairs_meta_file,
+                                        view=query_view,
+                                        transforms_rgb=val_drone_rgb_transforms,
+                                        transforms_depth=val_drone_depth_transforms,
+                                        mode=config.test_mode,
+                                        sate_img_dir=config.sate_img_dir,
+                                        query_mode=config.query_mode,
+                                        )
+    query_img_list = query_dataset_test.images_name
+    query_loc_xy_list = query_dataset_test.images_loc_xy
+    pairs_drone2sate_dict = query_dataset_test.pairs_drone2sate_dict
+    
+    query_dataloader_test = DataLoader(query_dataset_test,
+                                       batch_size=config.batch_size_eval,
+                                       num_workers=config.num_workers,
+                                       shuffle=False,
+                                       pin_memory=True)
+    
+    # Test gallery
+    gallery_dataset_test = GTARGBDDatasetEval(data_root=config.data_root,
+                                          pairs_meta_file=config.test_pairs_meta_file,
+                                          view=gallery_view,
+                                          transforms_rgb=val_sat_transforms,
+                                          mode=config.test_mode,
+                                          sate_img_dir=config.sate_img_dir,
+                                          query_mode=config.query_mode,
+                                         )
+    gallery_loc_xy_list = gallery_dataset_test.images_loc_xy
+    gallery_img_list = gallery_dataset_test.images_name
+    
+    gallery_dataloader_test = DataLoader(gallery_dataset_test,
+                                       batch_size=config.batch_size_eval,
+                                       num_workers=config.num_workers,
+                                       shuffle=False,
+                                       pin_memory=True)
+    
+    print("Query Images Test:", len(query_dataset_test))
+    print("Gallery Images Test:", len(gallery_dataset_test))
     
     #-----------------------------------------------------------------------------#
     # Loss                                                                        #
     #-----------------------------------------------------------------------------#
-    logger.info("是否启用加权训练: %s, k=%s", config.with_weight, config.k)
+    print("Train with weight?", config.with_weight, "k=", config.k)
     
     loss_function_normal = WeightedInfoNCE(
         device=config.device,
@@ -373,7 +350,7 @@ def train_script(config):
     warmup_steps = len(train_dataloader) * config.warmup_epochs
        
     if config.scheduler == "polynomial":
-        logger.info("学习率调度器: polynomial - 最大LR: %s - 结束LR: %s", config.lr, config.lr_end)
+        print("\nScheduler: polynomial - max LR: {} - end LR: {}".format(config.lr, config.lr_end))  
         scheduler = get_polynomial_decay_schedule_with_warmup(optimizer,
                                                               num_training_steps=train_steps,
                                                               lr_end = config.lr_end,
@@ -381,46 +358,45 @@ def train_script(config):
                                                               num_warmup_steps=warmup_steps)
         
     elif config.scheduler == "cosine":
-        logger.info("学习率调度器: cosine - 最大LR: %s", config.lr)
+        print("\nScheduler: cosine - max LR: {}".format(config.lr))   
         scheduler = get_cosine_schedule_with_warmup(optimizer,
                                                     num_training_steps=train_steps,
                                                     num_warmup_steps=warmup_steps)
         
     elif config.scheduler == "constant":
-        logger.info("学习率调度器: constant - 最大LR: %s", config.lr)
+        print("\nScheduler: constant - max LR: {}".format(config.lr))   
         scheduler =  get_constant_schedule_with_warmup(optimizer,
                                                        num_warmup_steps=warmup_steps)
            
     else:
         scheduler = None
         
-    logger.info("Warmup 轮数: %s - Warmup 步数: %s", str(config.warmup_epochs).ljust(2), warmup_steps)
-    logger.info("训练总轮数: %s - 训练总步数: %s", config.epochs, train_steps)
+    print("Warmup Epochs: {} - Warmup Steps: {}".format(str(config.warmup_epochs).ljust(2), warmup_steps))
+    print("Train Epochs:  {} - Train Steps:  {}".format(config.epochs, train_steps))
         
         
     #-----------------------------------------------------------------------------#
     # Zero Shot                                                                   #
     #-----------------------------------------------------------------------------#
     if config.zero_shot:
-        logger.info("%s[Zero Shot]%s", 30*"-", 30*"-")
-        with log_timer(logger, "zero_shot_evaluation", level=logging.INFO, sync_cuda=True), \
-             WandbStepTimer("zero_shot_evaluation", logger=logger, run=wandb_run, sync_cuda=True):
+        print("\n{}[{}]{}".format(30*"-", "Zero Shot", 30*"-"))  
+
+        with WandbStepTimer("train_rgbd/zero_shot_evaluation", run=wandb_run, step=0, sync_cuda=True):
             r1_test = evaluate(config=config,
                                model=model,
                                query_loader=query_dataloader_test,
-                               gallery_loader=gallery_dataloader_test,
+                               gallery_loader=gallery_dataloader_test, 
                                query_list=query_img_list,
                                gallery_list=gallery_img_list,
                                pairs_dict=pairs_drone2sate_dict,
                                ranks_list=[1, 5, 10],
-                               query_center_loc_xy_list=query_center_loc_xy_list,
-                               gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                               gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+                               query_loc_xy_list=query_loc_xy_list,
+                               gallery_loc_xy_list=gallery_loc_xy_list,
                                step_size=1000,
                                cleanup=True,
-                               logger=logger,
                                wandb_run=wandb_run,
                                epoch=0)
+        safe_log(wandb_run, {"eval/zero_shot_recall@1": float(r1_test) * 100.0}, step=0)
            
             
     #-----------------------------------------------------------------------------#
@@ -432,12 +408,12 @@ def train_script(config):
 
     for epoch in range(1, config.epochs+1):
         
-        logger.info("%s[Epoch: %s]%s", 30*"-", epoch, 30*"-")
+        print("\n{}[Epoch: {}]{}".format(30*"-", epoch, 30*"-"))
 
         if config.custom_sampling:
             train_dataloader.dataset.shuffle()
-        with log_timer(logger, f"train_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
-             WandbStepTimer(f"train_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
+        
+        with WandbStepTimer("train_rgbd/train_epoch", run=wandb_run, step=epoch, sync_cuda=True):
             train_loss = train_with_weight(config,
                                model,
                                dataloader=train_dataloader,
@@ -446,78 +422,56 @@ def train_script(config):
                                scheduler=scheduler,
                                scaler=scaler,
                                with_weight=config.with_weight,
-                               logger=logger,
                                wandb_run=wandb_run,
                                epoch=epoch)
-
-            logger.info("第 %s 轮: 训练损失 = %.3f, 学习率 = %.6f", epoch,
-                    train_loss, optimizer.param_groups[0]['lr'])
-            safe_log(
-                wandb_run,
-                {
-                    "train/loss": train_loss,
-                    "train/lr": optimizer.param_groups[0]['lr'],
-                },
-                step=epoch,
-            )
+        
+        print("Epoch: {}, Train Loss = {:.3f}, Lr = {:.6f}".format(epoch,
+                                                                   train_loss,
+                                                                   optimizer.param_groups[0]['lr']))
+        safe_log(wandb_run, {"train/loss": float(train_loss), "train/lr": optimizer.param_groups[0]['lr'], "train/epoch": epoch}, step=epoch)
         
         # evaluate
         if (epoch % config.eval_every_n_epoch == 0 and epoch != 0) or epoch == config.epochs:
         
-            logger.info("%s[Evaluate]%s", 30*"-", 30*"-")
-            with log_timer(logger, f"evaluate_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
-                 WandbStepTimer(f"evaluate_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
+            print("\n{}[{}]{}".format(30*"-", "Evaluate", 30*"-"))
+        
+            with WandbStepTimer("train_rgbd/evaluate_epoch", run=wandb_run, step=epoch, sync_cuda=True):
                 r1_test = evaluate(config=config,
                                     model=model,
                                     query_loader=query_dataloader_test,
-                                    gallery_loader=gallery_dataloader_test,
+                                    gallery_loader=gallery_dataloader_test, 
                                     query_list=query_img_list,
                                     gallery_list=gallery_img_list,
                                     pairs_dict=pairs_drone2sate_dict,
                                     ranks_list=[1, 5, 10],
-                                    query_center_loc_xy_list=query_center_loc_xy_list,
-                                    gallery_center_loc_xy_list=gallery_center_loc_xy_list,
-                                    gallery_topleft_loc_xy_list=gallery_topleft_loc_xy_list,
+                                    query_loc_xy_list=query_loc_xy_list,
+                                    gallery_loc_xy_list=gallery_loc_xy_list,
                                     step_size=1000,
                                     cleanup=True,
-                                    logger=logger,
                                     wandb_run=wandb_run,
                                     epoch=epoch)
+            safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0, "eval/epoch": epoch}, step=epoch)
                 
-            if r1_test > best_score or epoch == config.epochs:
+            if r1_test > best_score:
 
                 best_score = r1_test
-                safe_log(
-                    wandb_run,
-                    {
-                        "eval/best_recall@1": best_score * 100,
-                    },
-                    step=epoch,
-                )
+                safe_log(wandb_run, {"eval/best_recall@1": float(best_score) * 100.0}, step=epoch)
 
-                with log_timer(logger, f"save_checkpoint_epoch_{epoch}", level=logging.INFO, sync_cuda=True), \
-                     WandbStepTimer(f"save_checkpoint_epoch_{epoch}", logger=logger, run=wandb_run, step=epoch, sync_cuda=True):
-                    if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
-                        torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
-                    else:
-                        torch.save(model.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
+                if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
+                    torch.save(model.module.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
+                else:
+                    torch.save(model.state_dict(), '{}/weights_e{}_{:.4f}.pth'.format(model_path, epoch, r1_test))
                 
-    with log_timer(logger, "save_final_checkpoint", level=logging.INFO, sync_cuda=True), \
-         WandbStepTimer("save_final_checkpoint", logger=logger, run=wandb_run, sync_cuda=True):
-        if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
-            torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
-        else:
-            torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))
+    if torch.cuda.device_count() > 1 and len(config.gpu_ids) > 1:
+        torch.save(model.module.state_dict(), '{}/weights_end.pth'.format(model_path))
+    else:
+        torch.save(model.state_dict(), '{}/weights_end.pth'.format(model_path))  
+    safe_log(wandb_run, {"final/best_recall@1": float(best_score) * 100.0}, step=config.epochs)
+    finish_wandb(wandb_run)
 
-    logger.info("训练完成，最佳 Recall@1=%.4f", best_score)
-    safe_log(
-        wandb_run,
-        {
-            "final/best_recall@1": best_score * 100,
-        },
-        step=config.epochs,
-    )
-    finish_wandb(wandb_run, logger=logger)
+    if config.log_to_file:
+        f.close()
+        sys.stdout = sys.__stdout__          
 
 
 def parse_args():
@@ -575,14 +529,13 @@ def parse_args():
 
     parser.add_argument('--k', type=float, default=5, help='weighted k')
 
+    parser.add_argument('--diff_guidance', type=float, default=0.0, help='Differential guidance')
+
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
-    parser.add_argument('--use_pose_attention', action='store_true', help='Enable geometry pose attention prior for UAV branch')
-    parser.add_argument('--pose_attn_floor', type=float, default=0.3, help='Floor value for attention map')
-    parser.add_argument('--pose_gate_mode', type=str, default='multiplicative', choices=['multiplicative', 'residual'], help='Mode for pose gating')
-    parser.add_argument('--pose_gate_lambda', type=float, default=0.5, help='Lambda value for residual gate mode')
-    parser.add_argument('--pose_gate_insert_stage', type=str, default='pre_blocks', choices=['pre_blocks', 'after_block2', 'after_block4'], help='Insertion stage for pose gating')
+
+    parser.add_argument('--global_pool', type=str, default='avg', help='Global pool of model')
     parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
 
     args = parser.parse_args()
@@ -598,17 +551,6 @@ if __name__ == '__main__':
     config.test_pairs_meta_file = args.test_pairs_meta_file
     config.log_to_file = args.log_to_file
     config.log_path = args.log_path
-
-    # 日志路径处理
-    # 如果用户没有在命令行传入 log_path，则默认使用 Log/train/
-    if config.log_path is None:
-        log_dir = "Log/train/"
-    else:
-        log_dir = config.log_path
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    config.log_path = log_dir
-
     config.epochs = args.epochs
     config.batch_size = args.batch_size
     config.train_in_group = args.train_in_group
@@ -632,11 +574,8 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.train_ratio = args.train_ratio
-    config.use_pose_attention = args.use_pose_attention
-    config.pose_attn_floor = args.pose_attn_floor
-    config.pose_gate_mode = args.pose_gate_mode
-    config.pose_gate_lambda = args.pose_gate_lambda
-    config.pose_gate_insert_stage = args.pose_gate_insert_stage
+    config.diff_guidance = args.diff_guidance
+    config.global_pool = args.global_pool
     config.use_wandb = not(args.no_wandb)
 
     train_script(config)
