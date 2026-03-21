@@ -204,3 +204,10 @@ Game4Loc/train_private.sh
 *.out
 W&B/
 Log/
+
+wandb/
+**/wandb/
+Game4Loc/W&B/wandb/
+# W&B
+wandb/
+**/wandb/
