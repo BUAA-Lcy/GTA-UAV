@@ -194,7 +194,7 @@ def evaluate(
         logger.info("特征提取完成: 查询特征数量=%d, 图库图像数量=%d", query_num, len(gallery_list))
         if with_match and match_mode == "sparse":
             if query_yaw_list is None:
-                logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验")
+                logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验 (可能因 --ignore_yaw 被禁用或数据未提供)")
             else:
                 valid_yaws = []
                 invalid_count = 0
@@ -270,10 +270,11 @@ def evaluate(
 
             sparse_yaw0 = None
             sparse_yaw1 = None
-            if match_mode == "sparse" and query_yaw_list is not None and i < len(query_yaw_list):
-                # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
-                sparse_yaw0 = 0.0
-                sparse_yaw1 = query_yaw_list[i]
+            if match_mode == "sparse":
+                if query_yaw_list is not None and i < len(query_yaw_list) and query_yaw_list[i] is not None:
+                    # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
+                    sparse_yaw0 = 0.0
+                    sparse_yaw1 = query_yaw_list[i]
             match_loc = matcher.est_center(
                 gallery_img,
                 query_loader.dataset[i],

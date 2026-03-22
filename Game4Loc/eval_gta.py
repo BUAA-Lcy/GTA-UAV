@@ -62,6 +62,8 @@ class Configuration:
     test_pairs_meta_file = 'cross-area-drone2sate-test.json'
     sate_img_dir = 'satellite'
     use_wandb: bool = True
+    ignore_yaw: bool = False
+    iteration: bool = False
 
 
 def eval_script(config):
@@ -77,6 +79,8 @@ def eval_script(config):
     logger.info("匹配模块: %s", "开启" if config.with_match else "关闭")
     if config.with_match:
         logger.info("with_match 子步骤模式: %s", config.match_mode)
+        if config.match_mode == 'sparse':
+            logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "忽略 (ignore_yaw=True)" if config.ignore_yaw else "启用 (如果数据提供)")
     log_config(logger, config)
     if config.use_wandb:
         wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval", logger=logger, dataset_name=dataset_tagged, run_type="eval")
@@ -169,7 +173,12 @@ def eval_script(config):
                                                 mode='pos',
                                             )
     # Optional limit on number of queries for quick evaluation
+    if config.iteration:
+        config.query_limit = len(query_dataset_test) // 20
+        logger.info("启用 --iteration 模式，将仅评估前 %d 张查询图像 (约 1/20 的数据)", config.query_limit)
+
     if config.query_limit is not None and config.query_limit > 0:
+        # 为了保证每次跑的数据相同，这里固定取前 query_limit 张图像
         query_indices = list(range(min(config.query_limit, len(query_dataset_test))))
         query_dataset_test = Subset(query_dataset_test, query_indices)
         # derive lists from subset
@@ -178,11 +187,11 @@ def eval_script(config):
         full_q_yaws = getattr(query_dataset_test.dataset, "images_yaw", [])
         query_img_list = [full_q_names[i] for i in query_indices]
         query_center_loc_xy_list = [full_q_locs[i] for i in query_indices]
-        query_yaw_list = [full_q_yaws[i] for i in query_indices] if len(full_q_yaws) > 0 else None
+        query_yaw_list = [full_q_yaws[i] for i in query_indices] if (len(full_q_yaws) > 0 and not config.ignore_yaw) else None
     else:
         query_img_list = query_dataset_test.images_name
         query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
-        query_yaw_list = getattr(query_dataset_test, "images_yaw", None)
+        query_yaw_list = getattr(query_dataset_test, "images_yaw", None) if not config.ignore_yaw else None
 
     gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
     gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
@@ -278,6 +287,8 @@ def parse_args():
 
     parser.add_argument('--query_mode', type=str, default='D2S', help='Retrieval with drone to satellite')
     parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
+    parser.add_argument('--ignore_yaw', action='store_true', help='Ignore yaw information during sparse matching')
+    parser.add_argument('--iteration', action='store_true', help='If True, only evaluate on 1/20 of the query data (fixed subset) for faster iteration.')
 
     args = parser.parse_args()
     return args
@@ -302,5 +313,7 @@ if __name__ == '__main__':
     config.match_mode = args.match_mode
     config.query_limit = args.query_limit
     config.use_wandb = not(args.no_wandb)
+    config.ignore_yaw = args.ignore_yaw
+    config.iteration = args.iteration
 
     eval_script(config)
