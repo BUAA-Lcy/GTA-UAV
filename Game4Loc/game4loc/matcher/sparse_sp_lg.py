@@ -97,6 +97,7 @@ class SparseSpLgMatcher:
             "n_kept": 0,
             "empty_kpts": 0,
             "sparse_low_match": 0,
+            "inliers_list": [],
         }
 
     def _log(self, level, msg, *args):
@@ -422,10 +423,12 @@ class SparseSpLgMatcher:
             self.stats["total_s"] += total_t
             self.stats["n_samples"] += int(total_kpts0)
             self.stats["n_kept"] += int(mk0.shape[0])
+            self.stats["inliers_list"].append(inliers)
+            
             self._log(
                 logging.DEBUG,
-                "with_match 子步骤(sparse-SP+LG): 预处理=%.6fs SP检测=%.6fs LG匹配=%.6fs RANSAC(F)=%.6fs 快速H=%.6fs 总计=%.6fs 关键点数=%d 匹配数=%d yaw旋转角=%.2f mk0=%s mk1=%s",
-                t_preproc, t_sp_detect, t_lg_match, 0.0, t_h, total_t, int(total_kpts0), int(mk0.shape[0]), float(rot_angle), str(mk0.shape), str(mk1.shape),
+                "with_match 子步骤(sparse-SP+LG): 预处理=%.6fs SP检测=%.6fs LG匹配=%.6fs RANSAC(F)=%.6fs 快速H=%.6fs 总计=%.6fs 关键点数=%d 匹配数=%d 内点数=%d yaw旋转角=%.2f mk0=%s mk1=%s",
+                t_preproc, t_sp_detect, t_lg_match, 0.0, t_h, total_t, int(total_kpts0), int(mk0.shape[0]), inliers, float(rot_angle), str(mk0.shape), str(mk1.shape),
             )
             return H
         except Exception as e:
@@ -456,3 +459,21 @@ class SparseSpLgMatcher:
             self.stats["sparse_low_match"],
             self.stats["n_queries"],
         )
+        
+        # 统计并打印内点个数分布
+        inliers_arr = np.array(self.stats["inliers_list"])
+        if len(inliers_arr) > 0:
+            total_valid = len(inliers_arr)
+            gt_0 = np.sum(inliers_arr > 0)
+            gt_10 = np.sum(inliers_arr > 10)
+            gt_20 = np.sum(inliers_arr > 20)
+            gt_50 = np.sum(inliers_arr > 50)
+            
+            self._log(
+                logging.INFO,
+                "Sparse内点数(Inliers)分布: >0点占比: %.2f%%, >10点占比: %.2f%%, >20点占比: %.2f%%, >50点占比: %.2f%%",
+                (gt_0 / total_valid) * 100,
+                (gt_10 / total_valid) * 100,
+                (gt_20 / total_valid) * 100,
+                (gt_50 / total_valid) * 100
+            )

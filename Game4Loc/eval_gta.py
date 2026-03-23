@@ -11,7 +11,6 @@ from game4loc.dataset.gta import GTADatasetEval, get_transforms
 from game4loc.evaluate.gta import evaluate
 from game4loc.models.model import DesModel
 from game4loc.logger_utils import setup_logger, log_config, log_timer, log_run_header
-from game4loc.wandb_utils import init_wandb_run, finish_wandb, WandbStepTimer, safe_log
 
 
 def parse_tuple(s):
@@ -61,18 +60,27 @@ class Configuration:
     train_pairs_meta_file = 'cross-area-drone2sate-train.json'
     test_pairs_meta_file = 'cross-area-drone2sate-test.json'
     sate_img_dir = 'satellite'
-    use_wandb: bool = True
+    use_wandb: bool = False
     ignore_yaw: bool = False
     iteration: bool = False
+    query_limit: int = 0
 
 
 def eval_script(config):
-    wandb_run = None
     dataset_name = "GTA-UAV"
     area_tag = "cross" if ('cross' in str(config.test_pairs_meta_file)) else "same"
     match_tag = "match_on" if config.with_match else "match_off"
-    dataset_tagged = f"{dataset_name}_{area_tag}_{match_tag}"
-    logger, log_path = setup_logger(algorithm_name=config.model, log_level=logging.DEBUG, logger_name="game4loc.eval", run_type="eval", dataset_name=dataset_tagged)
+    
+    # 构建基础名称，例如 eval_GTA-UAV_cross_match_on
+    run_type_str = f"eval_{dataset_name}_{area_tag}_{match_tag}"
+
+    logger, log_path = setup_logger(
+        algorithm_name=config.model, 
+        log_level=logging.DEBUG, 
+        logger_name="game4loc.eval", 
+        run_type=run_type_str, 
+        dataset_name=""
+    )
     log_run_header(logger, run_mode="test", algorithm_name=config.model)
     logger.info("自动日志路径: %s", log_path)
     logger.info("评估区域模式: %s-area", area_tag)
@@ -82,10 +90,6 @@ def eval_script(config):
         if config.match_mode == 'sparse':
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "忽略 (ignore_yaw=True)" if config.ignore_yaw else "启用 (如果数据提供)")
     log_config(logger, config)
-    if config.use_wandb:
-        wandb_run = init_wandb_run(config=config, algorithm_name=f"{config.model}_eval", logger=logger, dataset_name=dataset_tagged, run_type="eval")
-        wandb_run.config.update({"run_type": "eval", "batch_size": config.batch_size}, allow_val_change=True)
-        atexit.register(finish_wandb, wandb_run, logger)
 
     #-----------------------------------------------------------------------------#
     # Model                                                                       #
@@ -93,8 +97,7 @@ def eval_script(config):
     
     logger.info("模型: %s", config.model)
 
-    with log_timer(logger, "测试模型初始化", level=logging.INFO, sync_cuda=True), \
-         WandbStepTimer("eval_gta/model_initialization", logger=logger, run=wandb_run, sync_cuda=True):
+    with log_timer(logger, "测试模型初始化", level=logging.INFO, sync_cuda=True):
         model = DesModel(config.model,
                         pretrained=False,
                         img_size=config.img_size,
@@ -174,8 +177,8 @@ def eval_script(config):
                                             )
     # Optional limit on number of queries for quick evaluation
     if config.iteration:
-        config.query_limit = len(query_dataset_test) // 20
-        logger.info("启用 --iteration 模式，将仅评估前 %d 张查询图像 (约 1/20 的数据)", config.query_limit)
+        config.query_limit = len(query_dataset_test) // 10
+        logger.info("启用 --iteration 模式，将仅评估前 %d 张查询图像 (约 1/10 的数据)", config.query_limit)
 
     if config.query_limit is not None and config.query_limit > 0:
         # 为了保证每次跑的数据相同，这里固定取前 query_limit 张图像
@@ -224,8 +227,7 @@ def eval_script(config):
         dis_threshold_list = [4*(i+1) for i in range(50)]
     
     logger.info("%s[开始 GTA-UAV 测试评估]%s", 30*"-", 30*"-")
-    with log_timer(logger, "测试阶段总体评估", level=logging.INFO, sync_cuda=True), \
-         WandbStepTimer("eval_gta/evaluation", logger=logger, run=wandb_run, sync_cuda=True):
+    with log_timer(logger, "测试阶段总体评估", level=logging.INFO, sync_cuda=True):
         r1_test = evaluate(
             config=config,
             model=model,
@@ -247,11 +249,8 @@ def eval_script(config):
             with_match=config.with_match,
             match_mode=config.match_mode,
             logger=logger,
-            wandb_run=wandb_run,
         )
     logger.info("测试结束，Recall@1=%.4f", r1_test * 100.0)
-    safe_log(wandb_run, {"eval/recall@1": float(r1_test) * 100.0})
-    finish_wandb(wandb_run, logger=logger)
  
 
 
@@ -288,7 +287,7 @@ def parse_args():
     parser.add_argument('--query_mode', type=str, default='D2S', help='Retrieval with drone to satellite')
     parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
     parser.add_argument('--ignore_yaw', action='store_true', help='Ignore yaw information during sparse matching')
-    parser.add_argument('--iteration', action='store_true', help='If True, only evaluate on 1/20 of the query data (fixed subset) for faster iteration.')
+    parser.add_argument('--iteration', action='store_true', help='If True, only evaluate on 1/10 of the query data (fixed subset) for faster iteration.')
 
     args = parser.parse_args()
     return args
@@ -312,7 +311,7 @@ if __name__ == '__main__':
     config.with_match = args.with_match
     config.match_mode = args.match_mode
     config.query_limit = args.query_limit
-    config.use_wandb = not(args.no_wandb)
+    config.use_wandb = False # 强制关闭wandb
     config.ignore_yaw = args.ignore_yaw
     config.iteration = args.iteration
 

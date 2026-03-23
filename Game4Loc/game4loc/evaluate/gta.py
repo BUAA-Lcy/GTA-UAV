@@ -134,15 +134,12 @@ def evaluate(
         with_match=False,
         match_mode="sparse",
         logger=None,
-        wandb_run=None,
-        epoch=None,
-    ):
+        epoch=None):
 
-    if logger is not None:
-        logger.info("开始提取特征并计算相似度分数")
-        logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s", ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode)
-    else:
-        print("Extract Features and Compute Scores:")
+    if logger is None:
+        logger = logging.getLogger("game4loc.eval")
+    logger.info("开始提取特征并计算相似度分数")
+    logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s", ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode)
     model.eval()
     t_query = time.perf_counter()
     img_features_query = predict(config, model, query_loader)
@@ -333,28 +330,26 @@ def evaluate(
     top1 = round(len(gallery_list)*0.01)
 
     string = []
-
-    for i in ranks_list:
-        string.append('Recall@{}: {:.4f}'.format(i, cmc[i-1]*100))
-        
-    string.append('Recall@top1: {:.4f}'.format(cmc[top1]*100))
-    string.append('AP: {:.4f}'.format(mAP*100))   
+    for r in ranks_list:
+        string.append('Recall@{}: {:.4f}'.format(r, cmc[r-1] * 100))
     
-    for i in range(len(sdmk_list)):
-        string.append('SDM@{}: {:.4f}'.format(sdmk_list[i], sdm_list[i]))
+    string.append('mAP: {:.4f}'.format(mAP * 100))
+
+    for k in disk_list:
+        string.append('SDM@{}: {:.4f}'.format(k, sum(sdm_list) / len(sdm_list) * 100))
+    
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
 
     result_str = ' - '.join(string)
-    if logger is not None:
-        logger.info(result_str)
-        logger.info(
-            "评估结果摘要: Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, mAP=%.4f%%",
-            cmc[0] * 100,
-            cmc[4] * 100 if len(cmc) > 4 else -1.0,
-            cmc[9] * 100 if len(cmc) > 9 else -1.0,
-            mAP * 100,
-        )
+    logger.info(result_str)
+    logger.info(
+        "评估结果摘要: Recall@1=%.4f%%, Recall@5=%.4f%%, Recall@10=%.4f%%, mAP=%.4f%%",
+        cmc[0] * 100,
+        cmc[4] * 100 if len(cmc) > 4 else -1.0,
+        cmc[9] * 100 if len(cmc) > 9 else -1.0,
+        mAP * 100,
+    )
         logger.debug(
             "评估耗时统计 查询特征提取=%.6fs 图库推理=%.6fs 分数拼接=%.6fs 指标计算=%.6fs 查询数=%d 图库数=%d",
             query_extract_time,
@@ -364,27 +359,6 @@ def evaluate(
             query_num,
             len(gallery_list),
         )
-    else:
-        print(result_str)
-
-    if wandb_run is not None:
-        eval_log = {
-            "eval/recall@1": float(cmc[0] * 100),
-            "eval/mAP": float(mAP * 100),
-            "time/eval/query_extract_s": query_extract_time,
-            "time/eval/gallery_infer_s": gallery_infer_time,
-            "time/eval/score_concat_s": score_concat_time,
-            "time/eval/metrics_s": metrics_time,
-            "eval/query_num": int(query_num),
-            "eval/gallery_num": int(len(gallery_list)),
-        }
-        if len(cmc) > 4:
-            eval_log["eval/recall@5"] = float(cmc[4] * 100)
-        if len(cmc) > 9:
-            eval_log["eval/recall@10"] = float(cmc[9] * 100)
-        if epoch is not None:
-            eval_log["eval/epoch"] = int(epoch)
-        wandb_run.log(eval_log)
     
     # cleanup and free memory on GPU
     if cleanup:
