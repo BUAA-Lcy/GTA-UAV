@@ -374,135 +374,240 @@ class GimDKM:
         if self.logger is not None:
             self.logger.log(level, msg, *args)
 
-    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None):
+    def _yaw_to_angle(self, yaw0, yaw1):
+        """Convert yaw prior to rotation angle"""
+        if yaw0 is None or yaw1 is None:
+            return 0.0
+        y0, y1 = float(yaw0), float(yaw1)
+        # Normalize to [-180, 180)
+        angle = ((y1 - y0 + 180.0) % 360.0) - 180.0
+        return angle
+
+    def _rotate_image_tensor(self, image_tensor, angle_deg):
+        """Rotate a PyTorch image tensor by angle_deg and return the rotated tensor and its inverse affine matrix."""
+        if abs(angle_deg) < 1e-3:
+            return image_tensor, np.eye(2, 3, dtype=np.float32)
+            
+        h, w = image_tensor.shape[-2], image_tensor.shape[-1]
+        
+        center_x = w / 2.0
+        center_y = h / 2.0
+        
+        rot_mat = cv2.getRotationMatrix2D((center_x, center_y), angle_deg, 1.0)
+        
+        cos_val = np.abs(rot_mat[0, 0])
+        sin_val = np.abs(rot_mat[0, 1])
+        new_w = int((h * sin_val) + (w * cos_val))
+        new_h = int((h * cos_val) + (w * sin_val))
+        
+        rot_mat[0, 2] += (new_w / 2.0) - center_x
+        rot_mat[1, 2] += (new_h / 2.0) - center_y
+        
+        inv_rot_mat = cv2.invertAffineTransform(rot_mat)
+        
+        # apply rotation
+        device = image_tensor.device
+        img_np = image_tensor[0].permute(1, 2, 0).cpu().numpy()
+        
+        rotated_np = cv2.warpAffine(img_np, rot_mat, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        if len(rotated_np.shape) == 2:
+            rotated_np = np.expand_dims(rotated_np, axis=2)
+            
+        rotated_tensor = torch.from_numpy(rotated_np).permute(2, 0, 1).unsqueeze(0).to(device)
+        return rotated_tensor, inv_rot_mat
+
+    def _warp_points_affine(self, pts, affine_mat):
+        """Warp coordinates back using affine inverse matrix."""
+        if pts.shape[0] == 0 or affine_mat is None:
+            return pts.astype(np.float32)
+        pts_h = np.concatenate([pts.astype(np.float32), np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1)
+        pts_out = (affine_mat @ pts_h.T).T
+        return pts_out.astype(np.float32)
+
+    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True):
         if self.match_mode == "sparse":
-            return self.sparse_matcher.match(image0, image1, yaw0=yaw0, yaw1=yaw1)
+            return self.sparse_matcher.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate)
 
         t_total = time.perf_counter()
-        data = dict(color0=image0, color1=image1, image0=image0, image1=image1)
-        b_ids, mconf, kpts0, kpts1 = None, None, None, None
-        t0 = time.perf_counter()
-        orig_width0, orig_height0, pad_left0, pad_right0, pad_top0, pad_bottom0 = get_padding_size(image0, 672, 896)
-        orig_width1, orig_height1, pad_left1, pad_right1, pad_top1, pad_bottom1 = get_padding_size(image1, 672, 896)
-        image0_ = torch.nn.functional.pad(image0, (pad_left0, pad_right0, pad_top0, pad_bottom0))
-        image1_ = torch.nn.functional.pad(image1, (pad_left1, pad_right1, pad_top1, pad_bottom1))
-        t_preproc = time.perf_counter() - t0
+        
+        # Dense mode 4-way rotation controlled by rotate parameter
+        candidate_angles = [0.0, 90.0, 180.0, 270.0] if rotate else [0.0]
+        
+        best_H = np.eye(3)
+        best_inliers = -1
+        best_stats = None
+        best_geom_info = None
+        best_data = None
+        best_rot_angle = 0.0
+        
+        rotation_search_logs = []
+        
+        base_rot_angle = self._yaw_to_angle(yaw0, yaw1)
+        
+        for search_angle in candidate_angles:
+            try:
+                rot_angle = ((base_rot_angle + search_angle + 180.0) % 360.0) - 180.0
+                
+                # Apply rotation to image1 (satellite image)
+                image1_rot, inv_rot_m = self._rotate_image_tensor(image1, rot_angle)
+                
+                data = dict(color0=image0, color1=image1_rot, image0=image0, image1=image1_rot)
+                b_ids, mconf, kpts0, kpts1 = None, None, None, None
+                t0 = time.perf_counter()
+                orig_width0, orig_height0, pad_left0, pad_right0, pad_top0, pad_bottom0 = get_padding_size(image0, 672, 896)
+                orig_width1, orig_height1, pad_left1, pad_right1, pad_top1, pad_bottom1 = get_padding_size(image1_rot, 672, 896)
+                image0_ = torch.nn.functional.pad(image0, (pad_left0, pad_right0, pad_top0, pad_bottom0))
+                image1_ = torch.nn.functional.pad(image1_rot, (pad_left1, pad_right1, pad_top1, pad_bottom1))
+                t_preproc = time.perf_counter() - t0
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            t1 = time.perf_counter()
-            dense_matches, dense_certainty = self.model.match(image0_, image1_)
-            t_match = time.perf_counter() - t1
-            t2 = time.perf_counter()
-            num_samples = 5000
-            sparse_matches, mconf = self.model.sample(dense_matches, dense_certainty, num_samples)
-            t_sample = time.perf_counter() - t2
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    t1 = time.perf_counter()
+                    dense_matches, dense_certainty = self.model.match(image0_, image1_)
+                    t_match = time.perf_counter() - t1
+                    t2 = time.perf_counter()
+                    num_samples = 5000
+                    sparse_matches, mconf = self.model.sample(dense_matches, dense_certainty, num_samples)
+                    t_sample = time.perf_counter() - t2
 
-        height0, width0 = image0_.shape[-2:]
-        height1, width1 = image1_.shape[-2:]
+                height0, width0 = image0_.shape[-2:]
+                height1, width1 = image1_.shape[-2:]
 
-        t3 = time.perf_counter()
-        kpts0 = sparse_matches[:, :2]
-        kpts0 = torch.stack((
-            width0 * (kpts0[:, 0] + 1) / 2, height0 * (kpts0[:, 1] + 1) / 2), dim=-1,)
-        kpts1 = sparse_matches[:, 2:]
-        kpts1 = torch.stack((
-            width1 * (kpts1[:, 0] + 1) / 2, height1 * (kpts1[:, 1] + 1) / 2), dim=-1,)
-        b_ids = torch.where(mconf[None])[0]
-        t_coord = time.perf_counter() - t3
+                t3 = time.perf_counter()
+                kpts0 = sparse_matches[:, :2]
+                kpts0 = torch.stack((
+                    width0 * (kpts0[:, 0] + 1) / 2, height0 * (kpts0[:, 1] + 1) / 2), dim=-1,)
+                kpts1 = sparse_matches[:, 2:]
+                kpts1 = torch.stack((
+                    width1 * (kpts1[:, 0] + 1) / 2, height1 * (kpts1[:, 1] + 1) / 2), dim=-1,)
+                b_ids = torch.where(mconf[None])[0]
+                t_coord = time.perf_counter() - t3
 
-        t4 = time.perf_counter()
-        kpts0 -= kpts0.new_tensor((pad_left0, pad_top0))[None]
-        kpts1 -= kpts1.new_tensor((pad_left1, pad_top1))[None]
-        mask_ = (kpts0[:, 0] > 0) & \
-               (kpts0[:, 1] > 0) & \
-               (kpts1[:, 0] > 0) & \
-               (kpts1[:, 1] > 0)
-        mask_ = mask_ & \
-               (kpts0[:, 0] <= (orig_width0 - 1)) & \
-               (kpts1[:, 0] <= (orig_width1 - 1)) & \
-               (kpts0[:, 1] <= (orig_height0 - 1)) & \
-               (kpts1[:, 1] <= (orig_height1 - 1))
+                t4 = time.perf_counter()
+                kpts0 -= kpts0.new_tensor((pad_left0, pad_top0))[None]
+                kpts1 -= kpts1.new_tensor((pad_left1, pad_top1))[None]
+                mask_ = (kpts0[:, 0] > 0) & \
+                       (kpts0[:, 1] > 0) & \
+                       (kpts1[:, 0] > 0) & \
+                       (kpts1[:, 1] > 0)
+                mask_ = mask_ & \
+                       (kpts0[:, 0] <= (orig_width0 - 1)) & \
+                       (kpts1[:, 0] <= (orig_width1 - 1)) & \
+                       (kpts0[:, 1] <= (orig_height0 - 1)) & \
+                       (kpts1[:, 1] <= (orig_height1 - 1))
 
-        mconf = mconf[mask_]
-        b_ids = b_ids[mask_]
-        kpts0 = kpts0[mask_]
-        kpts1 = kpts1[mask_]
-        t_filter = time.perf_counter() - t4
+                mconf = mconf[mask_]
+                b_ids = b_ids[mask_]
+                kpts0 = kpts0[mask_]
+                kpts1 = kpts1[mask_]
+                
+                # Inverse rotate the points back to original image1 coordinates
+                if kpts1.shape[0] > 0:
+                    kpts1_np = kpts1.cpu().detach().numpy()
+                    kpts1_np = self._warp_points_affine(kpts1_np, inv_rot_m)
+                    kpts1 = torch.from_numpy(kpts1_np).to(kpts1.device)
+                
+                t_filter = time.perf_counter() - t4
 
-        if len(kpts0) == 0 or len(kpts1) == 0:
-            self.stats['empty_kpts'] += 1
-            total_t = time.perf_counter() - t_total
-            self.stats['n_queries'] += 1
-            self.stats['preproc_s'] += t_preproc
-            self.stats['dkm_match_s'] += 0.0
-            self.stats['dkm_sample_s'] += 0.0
-            self.stats['coord_s'] += t_coord
-            self.stats['filter_s'] += t_filter
-            self.stats['ransac_f_s'] += 0.0
-            self.stats['ransac_h_s'] += 0.0
-            self.stats['total_s'] += total_t
-            self._log(logging.DEBUG,
-                      "with_match 子步骤: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d",
-                      t_preproc, 0.0, 0.0, t_coord, t_filter, 0.0, 0.0, total_t, int(sparse_matches.shape[0]) if 'sparse_matches' in locals() else 0, int(kpts0.shape[0]))
-            return np.eye(3)
+                if len(kpts0) == 0 or len(kpts1) == 0:
+                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches=0 | Inliers=0]")
+                    continue
 
-        try:
-            t5 = time.perf_counter()
-            _, mask = cv2.findFundamentalMat(kpts0.cpu().detach().numpy(),
-                                            kpts1.cpu().detach().numpy(),
-                                            cv2.USAC_MAGSAC, ransacReprojThreshold=1.0,
-                                            confidence=0.999999, maxIters=10000)
-            t_f = time.perf_counter() - t5
-        except Exception as e:
-            t_f = 0.0
-            self.stats['f_fail'] += 1
-            return np.eye(3)
+                try:
+                    t5 = time.perf_counter()
+                    _, mask = cv2.findFundamentalMat(kpts0.cpu().detach().numpy(),
+                                                    kpts1.cpu().detach().numpy(),
+                                                    cv2.USAC_MAGSAC, ransacReprojThreshold=1.0,
+                                                    confidence=0.999999, maxIters=10000)
+                    t_f = time.perf_counter() - t5
+                except Exception as e:
+                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): F_Fail]")
+                    continue
 
-        mask = mask.ravel() > 0
+                mask = mask.ravel() > 0
+                inliers_count = int(mask.sum())
 
-        data.update({
-            'hw0_i': image0.shape[-2:],
-            'hw1_i': image1.shape[-2:],
-            'mkpts0_f': kpts0,
-            'mkpts1_f': kpts1,
-            'm_bids': b_ids,
-            'mconf': mconf,
-            'inliers': mask,
-        })
+                data.update({
+                    'hw0_i': image0.shape[-2:],
+                    'hw1_i': image1.shape[-2:], # Use original shape for geom computation
+                    'mkpts0_f': kpts0,
+                    'mkpts1_f': kpts1,
+                    'm_bids': b_ids,
+                    'mconf': mconf,
+                    'inliers': mask,
+                })
 
-        t6 = time.perf_counter()
-        geom_info = compute_geom(data)
-        t_h = time.perf_counter() - t6
+                t6 = time.perf_counter()
+                geom_info = compute_geom(data)
+                t_h = time.perf_counter() - t6
+                
+                rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches={kpts0.shape[0]:>4d} | Inliers={inliers_count:>4d}]")
 
-        if vis:
-            alpha = 0.5
-            out = fast_make_matching_figure(data, b_id=0)
-            overlay = fast_make_matching_overlay(data, b_id=0)
-            out = cv2.addWeighted(out, 1 - alpha, overlay, alpha, 0)
-            cv2.imwrite(join('game4loc/matcher/assets/', f'match.png'), out[..., ::-1])
-            wrapped_images = wrap_images(image0, image1, geom_info, "Homography")
-            cv2.imwrite(join('game4loc/matcher/assets/', f'warp.png'), wrapped_images)
+                if inliers_count > best_inliers:
+                    best_inliers = inliers_count
+                    best_H = np.array(geom_info["Homography"])
+                    best_geom_info = geom_info
+                    best_data = data
+                    best_rot_angle = rot_angle
+                    best_stats = {
+                        "preproc_s": t_preproc,
+                        "dkm_match_s": t_match,
+                        "dkm_sample_s": t_sample,
+                        "coord_s": t_coord,
+                        "filter_s": t_filter,
+                        "ransac_f_s": t_f,
+                        "ransac_h_s": t_h,
+                        "n_samples": int(sparse_matches.shape[0]),
+                        "n_kept": int(kpts0.shape[0]),
+                    }
+
+            except Exception as e:
+                self._log(logging.WARNING, "DKM 稠密匹配异常 (Angle: %.1f): %s", search_angle, str(e))
+                rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°: Exception]")
+                continue
 
         total_t = time.perf_counter() - t_total
-        self.stats['n_queries'] += 1
-        self.stats['preproc_s'] += t_preproc
-        self.stats['dkm_match_s'] += t_match
-        self.stats['dkm_sample_s'] += t_sample
-        self.stats['coord_s'] += t_coord
-        self.stats['filter_s'] += t_filter
-        self.stats['ransac_f_s'] += t_f
-        self.stats['ransac_h_s'] += t_h
-        self.stats['total_s'] += total_t
-        self.stats['n_samples'] += int(sparse_matches.shape[0])
-        self.stats['n_kept'] += int(kpts0.shape[0])
-        self._log(logging.DEBUG,
-                  "with_match 子步骤: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d",
-                  t_preproc, t_match, t_sample, t_coord, t_filter, t_f, t_h, total_t, int(sparse_matches.shape[0]), int(kpts0.shape[0]))
+        search_log_str = " | ".join(rotation_search_logs) if len(rotation_search_logs) > 1 else ""
+        
+        if best_stats is None:
+            self.stats['empty_kpts'] += 1
+            self.stats['n_queries'] += 1
+            self.stats['total_s'] += total_t
+            if search_log_str:
+                self._log(logging.DEBUG, "Dense(DKM)四向搜索详情: %s => 全部失败", search_log_str)
+            return np.eye(3)
+            
+        if vis and best_data is not None:
+            alpha = 0.5
+            out = fast_make_matching_figure(best_data, b_id=0)
+            overlay = fast_make_matching_overlay(best_data, b_id=0)
+            out = cv2.addWeighted(out, 1 - alpha, overlay, alpha, 0)
+            cv2.imwrite(join('game4loc/matcher/assets/', f'match.png'), out[..., ::-1])
+            wrapped_images = wrap_images(image0, image1, best_geom_info, "Homography")
+            cv2.imwrite(join('game4loc/matcher/assets/', f'warp.png'), wrapped_images)
 
-        return np.array(geom_info["Homography"])
+        self.stats['n_queries'] += 1
+        self.stats['preproc_s'] += best_stats['preproc_s']
+        self.stats['dkm_match_s'] += best_stats['dkm_match_s']
+        self.stats['dkm_sample_s'] += best_stats['dkm_sample_s']
+        self.stats['coord_s'] += best_stats['coord_s']
+        self.stats['filter_s'] += best_stats['filter_s']
+        self.stats['ransac_f_s'] += best_stats['ransac_f_s']
+        self.stats['ransac_h_s'] += best_stats['ransac_h_s']
+        self.stats['total_s'] += total_t # count the total 4-way search time
+        self.stats['n_samples'] += best_stats['n_samples']
+        self.stats['n_kept'] += best_stats['n_kept']
+        
+        if search_log_str:
+            self._log(logging.DEBUG, "Dense(DKM)四向搜索详情: %s => 最终选择Rot=%.1f°", search_log_str, float(best_rot_angle))
+            
+        self._log(logging.DEBUG,
+                  "with_match 子步骤(Dense-DKM): 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d 内点数=%d",
+                  best_stats['preproc_s'], best_stats['dkm_match_s'], best_stats['dkm_sample_s'], best_stats['coord_s'], best_stats['filter_s'], best_stats['ransac_f_s'], best_stats['ransac_h_s'], total_t, best_stats['n_samples'], best_stats['n_kept'], best_inliers)
+
+        return best_H
     
-    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None):
+    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True):
         t0 = time.perf_counter()
         image0 = image0.to(self.device)
         image1 = image1.to(self.device)
@@ -514,7 +619,7 @@ class GimDKM:
         image0 = image0 * 0.5 + 0.5
         image1 = image1 * 0.5 + 0.5
 
-        H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1)
+        H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate)
 
         h, w = image0.shape[2:]
 

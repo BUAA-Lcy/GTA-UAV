@@ -63,6 +63,7 @@ class Configuration:
     use_wandb: bool = False
     ignore_yaw: bool = False
     iteration: bool = False
+    rotate: bool = True
     query_limit: int = 0
 
 
@@ -89,6 +90,7 @@ def eval_script(config):
         logger.info("with_match 子步骤模式: %s", config.match_mode)
         if config.match_mode == 'sparse':
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "忽略 (ignore_yaw=True)" if config.ignore_yaw else "启用 (如果数据提供)")
+            logger.info("稀疏匹配四向旋转搜索 (rotate): %s", "启用" if config.rotate else "关闭")
     log_config(logger, config)
 
     #-----------------------------------------------------------------------------#
@@ -248,6 +250,7 @@ def eval_script(config):
             with_match=config.with_match,
             match_mode=config.match_mode,
             logger=logger,
+            rotate=config.rotate,
         )
     logger.info("测试结束，Recall@1=%.4f", r1_test * 100.0)
  
@@ -287,6 +290,7 @@ def parse_args():
     parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
     parser.add_argument('--ignore_yaw', action='store_true', help='Ignore yaw information during sparse matching')
     parser.add_argument('--iteration', action='store_true', help='If True, only evaluate on 1/10 of the query data (fixed subset) for faster iteration.')
+    parser.add_argument('--no_rotate', action='store_true', help='Disable 4-way rotation search in sparse mode. By default rotation search is enabled.')
 
     args = parser.parse_args()
     return args
@@ -313,5 +317,6 @@ if __name__ == '__main__':
     config.use_wandb = False # 强制关闭wandb
     config.ignore_yaw = args.ignore_yaw
     config.iteration = args.iteration
+    config.rotate = not args.no_rotate
 
     eval_script(config)

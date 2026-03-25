@@ -160,23 +160,24 @@ def tile_satellite(root_dir):
             
             # resize
             scaled_image = image.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
+            # Avoid passing the whole resized satellite image into a large
+            # multiprocessing task list, which can trigger OOM and get the
+            # process killed on high-resolution maps.
+            tile_x_count = math.ceil(scaled_width / tile_size)
+            tile_y_count = math.ceil(scaled_height / tile_size)
+            total_tiles = tile_x_count * tile_y_count
 
-            ##### Multi Process
-            tasks = []
-            for x in range(0, scaled_width, tile_size):
+            for x in tqdm(
+                range(0, scaled_width, tile_size),
+                total=tile_x_count,
+                desc=f'Tiling {i:02} zoom {zoom}',
+            ):
                 for y in range(0, scaled_height, tile_size):
-                    tasks.append((scaled_image, f'{i:02}', zoom_dir, zoom, x, y, tile_size))
-            with Pool(cpu_count()) as pool:
-                pool.map(process_tile, tasks)
-            
-            ###### Single Process
-            # for x in range(0, scaled_width, tile_size):
-            #     for y in range(0, scaled_height, tile_size):
-            #         box = (x, y, min(x + tile_size, scaled_width), min(y + tile_size, scaled_height))
-            #         tile = scaled_image.crop(box)
-            #         transparent_tile = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
-            #         transparent_tile.paste(tile, (0, 0))
-            #         transparent_tile.save(f'{i:02}_{zoom_dir}_{x // tile_size}_{y // tile_size}.png'))
+                    process_tile((scaled_image, f'{i:02}', zoom_dir, zoom, x, y, tile_size))
+
+            print(f'Finished {i:02} zoom {zoom}: {total_tiles} tiles')
+
+            scaled_image.close()
 
     print('Tiling Satellite Done')
 

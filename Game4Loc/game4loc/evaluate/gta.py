@@ -132,10 +132,11 @@ def evaluate(
         plot_acc_threshold=False,
         top10_log=False,
         with_match=False,
-        match_mode="sparse",
-        logger=None,
-        epoch=None):
-
+             match_mode="sparse",
+             logger=None,
+             rotate=True,
+             epoch=None):
+    
     if logger is None:
         logger = logging.getLogger("game4loc.eval")
     logger.info("开始提取特征并计算相似度分数")
@@ -265,8 +266,9 @@ def evaluate(
                 if len(gallery_img_cache) > gallery_img_cache_size:
                     gallery_img_cache.popitem(last=False)
 
-            sparse_yaw0 = None
-            sparse_yaw1 = None
+        sparse_yaw0 = None
+        sparse_yaw1 = None
+        if with_match:
             if match_mode == "sparse":
                 if query_yaw_list is not None and i < len(query_yaw_list) and query_yaw_list[i] is not None:
                     # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
@@ -279,12 +281,34 @@ def evaluate(
                 gallery_topleft_loc_xy_list[top1_index],
                 yaw0=sparse_yaw0,
                 yaw1=sparse_yaw1,
+                rotate=rotate,
             )
-            dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc))
+            dis_ori = get_dis_target(query_center_loc_xy_list[i], gallery_center_loc_xy_list[top1_index])
+            
+            # 判断是否回退到了单位矩阵 (即 match_loc 与 gallery 粗检索点一模一样)
+            # 这说明 matcher 内部判断内点太少，主动放弃了匹配
+            is_fallback = False
+            if match_loc[0] == gallery_center_loc_xy_list[top1_index][0] and match_loc[1] == gallery_center_loc_xy_list[top1_index][1]:
+                is_fallback = True
+
+            if is_fallback:
+                dis_match = dis_ori # 直接采用检索Dis
+            else:
+                dis_match = get_dis_target(query_center_loc_xy_list[i], match_loc)
+
+            dis_match_list.append(dis_match)
         else:
+            dis_ori = get_dis_target(query_center_loc_xy_list[i], gallery_center_loc_xy_list[top1_index])
             dis_match_list.append(None)
         
-        dis_ori_list.append(get_dis_target(query_center_loc_xy_list[i], gallery_center_loc_xy_list[top1_index]))
+        dis_ori_list.append(dis_ori)
+        
+        if logger is not None and with_match:
+            fallback_str = " (回退粗检索)" if is_fallback else ""
+            logger.debug(
+                "样本匹配详情: Query=%s | Top1Gallery=%s | 检索Dis=%.2fm | 匹配后Dis=%.2fm%s\n",
+                query_list[i], gallery_list[top1_index], dis_ori, dis_match, fallback_str
+            )
             
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))
 
