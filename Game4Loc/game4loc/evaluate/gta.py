@@ -350,15 +350,15 @@ def evaluate(
         cmc[9] * 100 if len(cmc) > 9 else -1.0,
         mAP * 100,
     )
-        logger.debug(
-            "评估耗时统计 查询特征提取=%.6fs 图库推理=%.6fs 分数拼接=%.6fs 指标计算=%.6fs 查询数=%d 图库数=%d",
-            query_extract_time,
-            gallery_infer_time,
-            score_concat_time,
-            metrics_time,
-            query_num,
-            len(gallery_list),
-        )
+    logger.debug(
+        "评估耗时统计 查询特征提取=%.6fs 图库推理=%.6fs 分数拼接=%.6fs 指标计算=%.6fs 查询数=%d 图库数=%d",
+        query_extract_time,
+        gallery_infer_time,
+        score_concat_time,
+        metrics_time,
+        query_num,
+        len(gallery_list),
+    )
     
     # cleanup and free memory on GPU
     if cleanup:

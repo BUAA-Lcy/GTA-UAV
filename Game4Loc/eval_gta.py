@@ -135,8 +135,7 @@ def eval_script(config):
     # DataLoader                                                                  #
     #-----------------------------------------------------------------------------#
 
-    with log_timer(logger, "测试数据加载与构建", level=logging.INFO), \
-         WandbStepTimer("eval_gta/data_loading", logger=logger, run=wandb_run):
+    with log_timer(logger, "测试数据加载与构建", level=logging.INFO):
         val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
 
         # Test query

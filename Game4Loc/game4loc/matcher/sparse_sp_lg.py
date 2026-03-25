@@ -76,8 +76,8 @@ class SparseSpLgMatcher:
         self.sparse_scales = (1.0, 0.5, 0.75)
         self.sparse_max_matches_per_scale = 128
         self.sparse_max_total_matches = 256
-        self.sparse_min_inliers = 8
-        self.sparse_min_inlier_ratio = 0.05
+        self.sparse_min_inliers = 4
+        self.sparse_min_inlier_ratio = 0.001
 
         self.sparse_vis_dir = join(self.project_root, "Log", "sparse_bad_matches")
         self.sparse_vis_enable = True
