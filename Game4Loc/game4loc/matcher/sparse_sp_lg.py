@@ -14,7 +14,14 @@ from .networks.lightglue.models.matchers.lightglue import LightGlue
 
 
 class SparseSpLgMatcher:
-    def __init__(self, device="cuda", logger=None):
+    def __init__(
+        self,
+        device="cuda",
+        logger=None,
+        phase1_min_inliers=10,
+        use_multi_scale=True,
+        save_final_matches=False,
+    ):
         self.device = device
         self.logger = logger
         self.project_root = os.path.abspath(join(os.path.dirname(__file__), "..", ".."))
@@ -76,6 +83,8 @@ class SparseSpLgMatcher:
         self.sparse_scales = (1.0, 0.75, 0.5, 1.25)  # Added more scales
         self.sparse_max_matches_per_scale = 1024  # Increased drastically to keep more matches
         self.sparse_max_total_matches = 4096      # Increased drastically
+        self.sparse_phase1_min_inliers = max(0, int(phase1_min_inliers))
+        self.sparse_use_multi_scale = bool(use_multi_scale)
         self.sparse_min_inliers = 15 # 提高最低内点要求，如果二阶段抢救完还不到15个，就回退
         self.sparse_min_inlier_ratio = 0.001
 
@@ -84,6 +93,12 @@ class SparseSpLgMatcher:
         self.sparse_vis_max_save = 200
         self.sparse_vis_saved = 0
         os.makedirs(self.sparse_vis_dir, exist_ok=True)
+        self.sparse_final_vis_dir = join(self.project_root, "Log", "visloc_sparse_final_matches")
+        self.sparse_final_vis_enable = bool(save_final_matches)
+        self.sparse_final_vis_max_save = 200
+        self.sparse_final_vis_saved = 0
+        if self.sparse_final_vis_enable:
+            os.makedirs(self.sparse_final_vis_dir, exist_ok=True)
 
         self.stats = {
             "n_queries": 0,
@@ -99,6 +114,7 @@ class SparseSpLgMatcher:
             "sparse_low_match": 0,
             "inliers_list": [],
         }
+        self.last_match_info = None
 
     def _log(self, level, msg, *args):
         if self.logger is not None:
@@ -130,8 +146,23 @@ class SparseSpLgMatcher:
         self._log(logging.WARNING, "%s 权重未找到，候选路径=%s", model_name, str(candidate_paths))
         return False
 
-    def _save_sparse_bad_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None):
-        if (not self.sparse_vis_enable) or (self.sparse_vis_saved >= self.sparse_vis_max_save):
+    def _save_sparse_case(
+        self,
+        image0,
+        image1,
+        mk0,
+        mk1,
+        reason,
+        out_dir,
+        counter_attr,
+        max_save,
+        enabled=True,
+        inlier_mask=None,
+        image1_vis=None,
+        yaw_angle=None,
+        case_name=None,
+    ):
+        if (not enabled) or (getattr(self, counter_attr) >= max_save):
             return
         try:
             img0 = image0[0].detach().cpu().permute(1, 2, 0).numpy()
@@ -176,11 +207,61 @@ class SparseSpLgMatcher:
                 text += f" | yaw_rot={float(yaw_angle):.2f}"
             cv2.putText(canvas, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, lineType=cv2.LINE_AA)
 
-            self.sparse_vis_saved += 1
-            out_path = join(self.sparse_vis_dir, f"{self.sparse_vis_saved:05d}_{reason}.png")
+            next_idx = getattr(self, counter_attr) + 1
+            setattr(self, counter_attr, next_idx)
+            case_slug = self._build_case_slug(case_name)
+            filename_parts = [f"{next_idx:05d}"]
+            if case_slug:
+                filename_parts.append(case_slug)
+            filename_parts.append(reason)
+            out_path = join(out_dir, "_".join(filename_parts) + ".png")
             cv2.imwrite(out_path, canvas[..., ::-1])
         except Exception as e:
             self._log(logging.DEBUG, "保存 sparse 可视化失败: %s", str(e))
+
+    def _build_case_slug(self, case_name):
+        if case_name is None:
+            return ""
+        name = os.path.splitext(os.path.basename(str(case_name)))[0].strip()
+        if not name:
+            return ""
+        sanitized = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in name)
+        sanitized = "_".join(part for part in sanitized.split("_") if part)
+        return sanitized[:120]
+
+    def _save_sparse_bad_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None, case_name=None):
+        self._save_sparse_case(
+            image0=image0,
+            image1=image1,
+            mk0=mk0,
+            mk1=mk1,
+            reason=reason,
+            out_dir=self.sparse_vis_dir,
+            counter_attr="sparse_vis_saved",
+            max_save=self.sparse_vis_max_save,
+            enabled=self.sparse_vis_enable,
+            inlier_mask=inlier_mask,
+            image1_vis=image1_vis,
+            yaw_angle=yaw_angle,
+            case_name=case_name,
+        )
+
+    def _save_sparse_final_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None, case_name=None):
+        self._save_sparse_case(
+            image0=image0,
+            image1=image1,
+            mk0=mk0,
+            mk1=mk1,
+            reason=reason,
+            out_dir=self.sparse_final_vis_dir,
+            counter_attr="sparse_final_vis_saved",
+            max_save=self.sparse_final_vis_max_save,
+            enabled=self.sparse_final_vis_enable,
+            inlier_mask=inlier_mask,
+            image1_vis=image1_vis,
+            yaw_angle=yaw_angle,
+            case_name=case_name,
+        )
 
     def _yaw_to_angle(self, yaw0, yaw1):
         if yaw0 is None or yaw1 is None:
@@ -195,6 +276,24 @@ class SparseSpLgMatcher:
         # Rotate image1 towards image0 orientation with a continuous angle.
         delta = yaw1_f - yaw0_f 
         return ((delta + 180.0) % 360.0) - 180.0
+
+    def _normalize_rotate_step(self, rotate, default_step=90.0):
+        if isinstance(rotate, bool):
+            return default_step if rotate else 0.0
+        try:
+            rotate_step = float(rotate)
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(rotate_step):
+            return default_step
+        return max(0.0, abs(rotate_step))
+
+    def _build_candidate_angles(self, rotate_step):
+        rotate_step = self._normalize_rotate_step(rotate_step)
+        if rotate_step <= 1e-6 or rotate_step >= 360.0:
+            return [0.0]
+        n_steps = int(np.floor((360.0 - 1e-6) / rotate_step)) + 1
+        return [float(round(i * rotate_step, 6)) for i in range(n_steps)]
 
     def _rotate_image_with_angle(self, image, angle_deg):
         # image: [1, 1, H, W], rotate around center, keep same size.
@@ -263,7 +362,8 @@ class SparseSpLgMatcher:
         max_edge = max(h0_orig, w0_orig, h1_orig, w1_orig)
         base_scale = float(self.sparse_sp_max_edge) / float(max_edge) if max_edge > self.sparse_sp_max_edge else 1.0
         scales = []
-        for s in self.sparse_scales:
+        source_scales = self.sparse_scales if self.sparse_use_multi_scale else (1.0,)
+        for s in source_scales:
             s_eff = max(0.2, min(1.0, float(s) * base_scale))
             if not any(abs(s_eff - x) < 1e-3 for x in scales):
                 scales.append(s_eff)
@@ -411,11 +511,16 @@ class SparseSpLgMatcher:
 
         return best_inliers, best_ratio, best_H, best_angle, best_stats, rotation_search_logs
 
-    def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True):
+    def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None):
         t_total = time.perf_counter()
+        rotate_step_p1 = self._normalize_rotate_step(rotate)
+        if rotate_step_p1 <= 1e-6:
+            yaw0 = None
+            yaw1 = None
+        selected_phase = 1
         
-        # Phase 1: 4-way rotation with normal RANSAC threshold
-        candidate_angles_p1 = [0.0, 90.0, 180.0, 270.0] if rotate else [0.0]
+        # Phase 1: angle search with the configured rotation step.
+        candidate_angles_p1 = self._build_candidate_angles(rotate_step_p1)
         thresh_p1 = self.sparse_ransac_reproj_threshold
         
         b_inliers, b_ratio, b_H, b_angle, b_stats, logs_p1 = self._run_matching_for_angles(
@@ -423,10 +528,17 @@ class SparseSpLgMatcher:
         )
         all_logs = logs_p1
         
-        # Phase 2: If the best match from Phase 1 has < 10 inliers and we are rotating, trigger 8-way fallback search
-        if rotate and b_inliers < 10:
-            self._log(logging.DEBUG, "一阶段最优内点数(%d) < 10，触发二阶段8向放宽搜索 (Threshold: 100.0, Method: RANSAC)", b_inliers)
-            candidate_angles_p2 = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0]
+        # Phase 2: if phase 1 is weak, retry with half the step and a looser RANSAC threshold.
+        if rotate_step_p1 > 0 and b_inliers < self.sparse_phase1_min_inliers:
+            rotate_step_p2 = rotate_step_p1 / 2.0
+            self._log(
+                logging.DEBUG,
+                "一阶段最优内点数(%d) < %d，触发二阶段放宽搜索 (Step: %.1f°, Threshold: 100.0, Method: RANSAC)",
+                b_inliers,
+                self.sparse_phase1_min_inliers,
+                rotate_step_p2,
+            )
+            candidate_angles_p2 = self._build_candidate_angles(rotate_step_p2)
             thresh_p2 = 100.0  # 大幅度放宽重投影误差
             
             # 使用传统的 cv2.RANSAC 代替 USAC_MAGSAC。
@@ -442,6 +554,7 @@ class SparseSpLgMatcher:
             # 如果二阶段找到了更多的内点，就采用二阶段的结果
             if b_inliers_p2 > b_inliers:
                 b_inliers, b_ratio, b_H, b_angle, b_stats = b_inliers_p2, b_ratio_p2, b_H_p2, b_angle_p2, b_stats_p2
+                selected_phase = 2
                 self._log(logging.DEBUG, "二阶段搜索成功拯救样本，内点数提升至 %d", b_inliers)
             else:
                 self._log(logging.DEBUG, "二阶段搜索未能进一步提升内点数，保留一阶段结果")
@@ -452,6 +565,13 @@ class SparseSpLgMatcher:
         if b_stats is None:
             self.stats["n_queries"] += 1
             self.stats["total_s"] += total_t
+            self.last_match_info = {
+                "match_mode": "sparse",
+                "phase": selected_phase,
+                "inliers": 0,
+                "rot_angle": 0.0,
+                "n_kept": 0,
+            }
             return np.eye(3)
             
         H, inliers, inlier_ratio, rot_angle = b_H, b_inliers, b_ratio, b_angle
@@ -459,7 +579,7 @@ class SparseSpLgMatcher:
         if b_stats["n_kept"] < 4:
             self._save_sparse_bad_case(
                 image0, image1, b_stats["mk0"], b_stats["mk1"], "low_match",
-                image1_vis=b_stats["image1_vis_rot"], yaw_angle=rot_angle,
+                image1_vis=b_stats["image1_vis_rot"], yaw_angle=rot_angle, case_name=case_name,
             )
             self.stats["sparse_low_match"] += 1
             if self.stats["sparse_low_match"] <= 5 or (self.stats["sparse_low_match"] % 200 == 0):
@@ -468,10 +588,25 @@ class SparseSpLgMatcher:
         elif inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
             self._save_sparse_bad_case(
                 image0, image1, b_stats["mk0"], b_stats["mk1"], "low_quality",
-                b_stats["h_mask"], image1_vis=b_stats["image1_vis_rot"], yaw_angle=rot_angle,
+                b_stats["h_mask"], image1_vis=b_stats["image1_vis_rot"], yaw_angle=rot_angle, case_name=case_name,
             )
             self._log(logging.DEBUG, "SP+LG H 质量不足，回退单位H: inliers=%d ratio=%.3f matches=%d", inliers, inlier_ratio, b_stats["n_kept"])
             H = np.eye(3)
+
+        final_reason = f"final_phase{selected_phase}"
+        if b_stats["n_kept"] < 4 or inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
+            final_reason += "_fallback"
+        self._save_sparse_final_case(
+            image0,
+            image1,
+            b_stats["mk0"],
+            b_stats["mk1"],
+            final_reason,
+            b_stats["h_mask"],
+            image1_vis=b_stats["image1_vis_rot"],
+            yaw_angle=rot_angle,
+            case_name=case_name,
+        )
             
         self.stats["n_queries"] += 1
         self.stats["preproc_s"] += b_stats["preproc_s"]
@@ -492,6 +627,13 @@ class SparseSpLgMatcher:
             b_stats["preproc_s"], b_stats["sp_detect_s"], b_stats["lg_match_s"], 0.0, b_stats["ransac_h_s"], total_t, 
             int(b_stats["total_kpts0"]), b_stats["n_kept"], inliers, float(rot_angle), b_stats["mk0_shape"], b_stats["mk1_shape"],
         )
+        self.last_match_info = {
+            "match_mode": "sparse",
+            "phase": selected_phase,
+            "inliers": int(inliers),
+            "rot_angle": float(rot_angle),
+            "n_kept": int(b_stats["n_kept"]),
+        }
         return H
 
     def summarize_and_log(self):
@@ -533,3 +675,6 @@ class SparseSpLgMatcher:
                 (gt_20 / total_valid) * 100,
                 (gt_50 / total_valid) * 100
             )
+
+    def get_last_match_info(self):
+        return self.last_match_info

@@ -54,6 +54,97 @@ SATE_SIZE = {
     '11': (16582, 29592),
 }
 
+_VISLOC_POSE_CACHE = {}
+
+
+def _safe_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def load_visloc_pose_metadata(data_root):
+    data_root = os.path.abspath(data_root)
+    if data_root in _VISLOC_POSE_CACHE:
+        return _VISLOC_POSE_CACHE[data_root]
+
+    pose_metadata = {}
+    if not os.path.isdir(data_root):
+        _VISLOC_POSE_CACHE[data_root] = pose_metadata
+        return pose_metadata
+
+    for scene_name in sorted(os.listdir(data_root)):
+        scene_dir = os.path.join(data_root, scene_name)
+        csv_path = os.path.join(scene_dir, f"{scene_name}.csv")
+        if not os.path.isdir(scene_dir) or not os.path.isfile(csv_path):
+            continue
+
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as csvfile:
+            csv_reader = csv.DictReader(csvfile, delimiter=",")
+            for row in csv_reader:
+                img_name = row.get("filename")
+                if not img_name:
+                    continue
+
+                height = _safe_float(row.get("height"))
+                omega = _safe_float(row.get("Omega"))
+                kappa = _safe_float(row.get("Kappa"))
+                phi1 = _safe_float(row.get("Phi1"))
+                phi2 = _safe_float(row.get("Phi2"))
+                yaw = phi1 if phi1 is not None else phi2
+
+                pose_metadata[img_name] = {
+                    "height": height,
+                    "omega": omega,
+                    "kappa": kappa,
+                    "phi1": phi1,
+                    "phi2": phi2,
+                    "drone_yaw": yaw,
+                    "cam_yaw": yaw,
+                }
+
+    _VISLOC_POSE_CACHE[data_root] = pose_metadata
+    return pose_metadata
+
+
+def merge_visloc_pose_metadata(pair_drone2sate, pose_metadata_map):
+    drone_meta = pair_drone2sate.get("drone_metadata") or {}
+    csv_pose_meta = pose_metadata_map.get(pair_drone2sate.get("drone_img_name"), {})
+
+    merged_meta = {}
+    for key in (
+        "height",
+        "omega",
+        "kappa",
+        "phi1",
+        "phi2",
+        "drone_roll",
+        "drone_pitch",
+        "drone_yaw",
+        "cam_roll",
+        "cam_pitch",
+        "cam_yaw",
+    ):
+        value = drone_meta.get(key)
+        if value is None:
+            value = csv_pose_meta.get(key)
+        merged_meta[key] = value
+
+    if merged_meta["drone_yaw"] is None:
+        merged_meta["drone_yaw"] = merged_meta.get("cam_yaw")
+    if merged_meta["cam_yaw"] is None:
+        merged_meta["cam_yaw"] = merged_meta.get("drone_yaw")
+
+    if any(value is not None for value in merged_meta.values()):
+        return merged_meta
+    return None
+
 
 def tile_center_latlon(left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, zoom, x, y, str_i):
     """Calculate the center lat/lon of a tile."""
@@ -186,9 +277,13 @@ class VisLocDatasetTrain(Dataset):
         
         # for query there is only one file in folder
         query_img = cv2.imread(query_img_path)
+        if query_img is None:
+            raise FileNotFoundError(f"Failed to read query image: {query_img_path}")
         query_img = cv2.cvtColor(query_img, cv2.COLOR_BGR2RGB)
         
         gallery_img = cv2.imread(gallery_img_path)
+        if gallery_img is None:
+            raise FileNotFoundError(f"Failed to read gallery image: {gallery_img_path}")
         gallery_img = cv2.cvtColor(gallery_img, cv2.COLOR_BGR2RGB)
         
         if np.random.random() < self.prob_flip:
@@ -322,16 +417,23 @@ class VisLocDatasetEval(Dataset):
         self.images_center_loc_xy = []
         # For finer localization with image matching
         self.images_topleft_loc_xy = []
+        self.images_yaw = []
+        self.images_pose_metadata = []
 
         self.pairs_sate2drone_dict = {}
         self.pairs_drone2sate_dict = {}
         self.pairs_match_set = set()
+        pose_metadata_map = load_visloc_pose_metadata(data_root) if view == 'drone' else {}
 
         if view == 'drone':
             for pair_drone2sate in pairs_meta_data:
                 drone_img_name = pair_drone2sate['drone_img_name']
                 drone_img_dir = pair_drone2sate['drone_img_dir']
                 drone_loc_xy = pair_drone2sate['drone_loc_lat_lon']
+                drone_pose_metadata = merge_visloc_pose_metadata(pair_drone2sate, pose_metadata_map)
+                drone_yaw = None
+                if drone_pose_metadata is not None:
+                    drone_yaw = drone_pose_metadata.get('drone_yaw', drone_pose_metadata.get('cam_yaw'))
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:
@@ -342,26 +444,32 @@ class VisLocDatasetEval(Dataset):
                     self.images_path.append(os.path.join(data_root, drone_img_dir, drone_img_name))
                     self.images_name.append(drone_img_name)
                     self.images_center_loc_xy.append((drone_loc_xy[0], drone_loc_xy[1]))
+                    self.images_yaw.append(drone_yaw)
+                    self.images_pose_metadata.append(drone_pose_metadata)
 
         elif view == 'sate':
             if query_mode == 'D2S':
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
-                    self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
+                    self.images_path.append(os.path.join(sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
                     loc_center, loc_topleft = tile2sate(sate_img)
                     self.images_center_loc_xy.append(loc_center)
                     self.images_topleft_loc_xy.append(loc_topleft)
+                    self.images_yaw.append(None)
+                    self.images_pose_metadata.append(None)
             else:
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
                     if sate_img not in pairs_sate2drone_dict.keys():
                         continue
-                    self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
+                    self.images_path.append(os.path.join(sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
                     loc_center, loc_topleft = tile2sate(sate_img)
                     self.images_center_loc_xy.append(loc_center)
                     self.images_topleft_loc_xy.append(loc_topleft)
+                    self.images_yaw.append(None)
+                    self.images_pose_metadata.append(None)
         self.transforms = transforms
 
 
@@ -370,6 +478,8 @@ class VisLocDatasetEval(Dataset):
         img_path = self.images_path[index]
         
         img = cv2.imread(img_path)
+        if img is None:
+            raise FileNotFoundError(f"Failed to read image: {img_path}")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         # image transforms

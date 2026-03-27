@@ -124,6 +124,7 @@ class Configuration:
 
 def train_script(config):    
 
+    f = None
     if config.log_to_file:
         f = open(config.log_path, 'w')
         sys.stdout = f
@@ -449,7 +450,8 @@ def train_script(config):
     gc.collect()
     torch.cuda.empty_cache()
 
-    f.close()
+    if f is not None:
+        f.close()
     sys.stdout = sys.__stdout__
 
 

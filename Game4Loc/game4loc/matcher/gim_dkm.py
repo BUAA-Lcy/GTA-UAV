@@ -327,6 +327,9 @@ class GimDKM:
             device='cuda',
             logger=None,
             match_mode='sparse',
+            sparse_phase1_min_inliers=10,
+            sparse_use_multi_scale=True,
+            sparse_save_final_vis=False,
         ):
         self.match_mode = str(match_mode).lower()
         if self.match_mode not in {"dense", "sparse"}:
@@ -350,7 +353,13 @@ class GimDKM:
         self.logger = logger
         self.sparse_matcher = None
         if self.match_mode == "sparse":
-            self.sparse_matcher = SparseSpLgMatcher(device=device, logger=logger)
+            self.sparse_matcher = SparseSpLgMatcher(
+                device=device,
+                logger=logger,
+                phase1_min_inliers=sparse_phase1_min_inliers,
+                use_multi_scale=sparse_use_multi_scale,
+                save_final_matches=sparse_save_final_vis,
+            )
         self.stats = {
             'mode': self.match_mode,
             'n_queries': 0,
@@ -368,6 +377,7 @@ class GimDKM:
             'h_fail': 0,
             'empty_kpts': 0,
         }
+        self.last_match_info = None
         self._log(logging.INFO, "with_match matcher mode: %s", self.match_mode)
 
     def _log(self, level, msg, *args):
@@ -382,6 +392,24 @@ class GimDKM:
         # Normalize to [-180, 180)
         angle = ((y1 - y0 + 180.0) % 360.0) - 180.0
         return angle
+
+    def _normalize_rotate_step(self, rotate, default_step=90.0):
+        if isinstance(rotate, bool):
+            return default_step if rotate else 0.0
+        try:
+            rotate_step = float(rotate)
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(rotate_step):
+            return default_step
+        return max(0.0, abs(rotate_step))
+
+    def _build_candidate_angles(self, rotate_step):
+        rotate_step = self._normalize_rotate_step(rotate_step)
+        if rotate_step <= 1e-6 or rotate_step >= 360.0:
+            return [0.0]
+        n_steps = int(np.floor((360.0 - 1e-6) / rotate_step)) + 1
+        return [float(round(i * rotate_step, 6)) for i in range(n_steps)]
 
     def _rotate_image_tensor(self, image_tensor, angle_deg):
         """Rotate a PyTorch image tensor by angle_deg and return the rotated tensor and its inverse affine matrix."""
@@ -424,14 +452,23 @@ class GimDKM:
         pts_out = (affine_mat @ pts_h.T).T
         return pts_out.astype(np.float32)
 
-    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True):
+    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True, case_name=None):
         if self.match_mode == "sparse":
-            return self.sparse_matcher.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate)
+            H = self.sparse_matcher.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate, case_name=case_name)
+            if self.sparse_matcher is not None and self.sparse_matcher.last_match_info is not None:
+                self.last_match_info = dict(self.sparse_matcher.last_match_info)
+            else:
+                self.last_match_info = None
+            return H
 
         t_total = time.perf_counter()
+        rotate_step = self._normalize_rotate_step(rotate)
+        if rotate_step <= 1e-6:
+            yaw0 = None
+            yaw1 = None
         
-        # Dense mode 4-way rotation controlled by rotate parameter
-        candidate_angles = [0.0, 90.0, 180.0, 270.0] if rotate else [0.0]
+        # Dense mode angle search controlled by rotate step.
+        candidate_angles = self._build_candidate_angles(rotate_step)
         
         best_H = np.eye(3)
         best_inliers = -1
@@ -573,6 +610,13 @@ class GimDKM:
             self.stats['empty_kpts'] += 1
             self.stats['n_queries'] += 1
             self.stats['total_s'] += total_t
+            self.last_match_info = {
+                "match_mode": "dense",
+                "phase": 1,
+                "inliers": 0,
+                "rot_angle": 0.0,
+                "n_kept": 0,
+            }
             if search_log_str:
                 self._log(logging.DEBUG, "Dense(DKM)四向搜索详情: %s => 全部失败", search_log_str)
             return np.eye(3)
@@ -604,10 +648,20 @@ class GimDKM:
         self._log(logging.DEBUG,
                   "with_match 子步骤(Dense-DKM): 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 样本数=%d 保留=%d 内点数=%d",
                   best_stats['preproc_s'], best_stats['dkm_match_s'], best_stats['dkm_sample_s'], best_stats['coord_s'], best_stats['filter_s'], best_stats['ransac_f_s'], best_stats['ransac_h_s'], total_t, best_stats['n_samples'], best_stats['n_kept'], best_inliers)
+        self.last_match_info = {
+            "match_mode": "dense",
+            "phase": 1,
+            "inliers": int(best_inliers),
+            "rot_angle": float(best_rot_angle),
+            "n_kept": int(best_stats["n_kept"]),
+        }
 
         return best_H
+
+    def get_last_match_info(self):
+        return self.last_match_info
     
-    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True):
+    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True, case_name=None):
         t0 = time.perf_counter()
         image0 = image0.to(self.device)
         image1 = image1.to(self.device)
@@ -619,7 +673,7 @@ class GimDKM:
         image0 = image0 * 0.5 + 0.5
         image1 = image1 * 0.5 + 0.5
 
-        H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate)
+        H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate, case_name=case_name)
 
         h, w = image0.shape[2:]
 

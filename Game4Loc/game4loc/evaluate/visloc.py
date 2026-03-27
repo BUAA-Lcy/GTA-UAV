@@ -115,6 +115,7 @@ def evaluate(
         gallery_center_loc_xy_list,
         gallery_topleft_loc_xy_list,
         pairs_dict,
+        query_yaw_list=None,
         ranks_list=[1, 5, 10],
         sdmk_list=[1, 3, 5],
         disk_list=[1, 3, 5],
@@ -124,6 +125,11 @@ def evaluate(
         plot_acc_threshold=False,
         top10_log=False,
         with_match=False,
+        match_mode='sparse',
+        rotate=True,
+        sparse_phase1_min_inliers=10,
+        sparse_use_multi_scale=True,
+        sparse_save_final_vis=False,
         wandb_run=None,
         epoch=None,
         logger=None,
@@ -132,8 +138,8 @@ def evaluate(
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
         logger.debug(
-            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s",
-            ranks_list, sdmk_list, disk_list, step_size, with_match,
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_phase1_min_inliers=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_phase1_min_inliers, sparse_use_multi_scale, sparse_save_final_vis,
         )
     else:
         print("Extract Features and Compute Scores:")
@@ -163,7 +169,14 @@ def evaluate(
 
     # with image match for finer loc
     if with_match:
-        matcher = GimDKM(device=config.device)
+        matcher = GimDKM(
+            device=config.device,
+            match_mode=match_mode,
+            logger=logger,
+            sparse_phase1_min_inliers=sparse_phase1_min_inliers,
+            sparse_use_multi_scale=sparse_use_multi_scale,
+            sparse_save_final_vis=sparse_save_final_vis,
+        )
 
     ap = 0.0
 
@@ -189,6 +202,48 @@ def evaluate(
     matches_tensor = [torch.tensor(matches, dtype=torch.long) for matches in matches_list]
 
     query_num = img_features_query.shape[0]
+    if logger is not None and with_match and match_mode == "sparse":
+        if query_yaw_list is None:
+            logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验 (可能因 --use_yaw 未启用或数据未提供)")
+        else:
+            valid_yaws = []
+            invalid_count = 0
+            for yaw in query_yaw_list:
+                if yaw is None:
+                    invalid_count += 1
+                    continue
+                try:
+                    yaw_float = float(yaw)
+                except (TypeError, ValueError):
+                    invalid_count += 1
+                    continue
+                if not np.isfinite(yaw_float):
+                    invalid_count += 1
+                    continue
+                valid_yaws.append(yaw_float)
+
+            if len(valid_yaws) == 0:
+                logger.warning(
+                    "sparse yaw 检查: 全部无效，总数=%d 无效=%d",
+                    len(query_yaw_list),
+                    invalid_count,
+                )
+            else:
+                yaw_arr = np.asarray(valid_yaws, dtype=np.float32)
+                near_zero_ratio = float(np.mean(np.abs(yaw_arr) < 1e-3))
+                logger.info(
+                    "sparse yaw 统计: 总数=%d 有效=%d 无效=%d min=%.3f max=%.3f mean=%.3f near_zero_ratio=%.3f sample=%s",
+                    len(query_yaw_list),
+                    int(yaw_arr.shape[0]),
+                    invalid_count,
+                    float(np.min(yaw_arr)),
+                    float(np.max(yaw_arr)),
+                    float(np.mean(yaw_arr)),
+                    near_zero_ratio,
+                    str([round(float(v), 3) for v in yaw_arr[:5]]),
+                )
+                if near_zero_ratio > 0.9:
+                    logger.warning("sparse yaw 检查: 超过90%%样本接近0度，建议确认 yaw 字段映射是否正确")
 
     all_ap = []
     cmc = np.zeros(len(gallery_list))
@@ -215,13 +270,33 @@ def evaluate(
         # match_loc: (lat, lon)
         # matcher.est_center (x, y) -> (lon, lat)
         match_loc = None
+        match_info = None
+        sparse_yaw0 = None
+        sparse_yaw1 = None
         if with_match:
+            if match_mode == "sparse":
+                if query_yaw_list is not None and i < len(query_yaw_list) and query_yaw_list[i] is not None:
+                    # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
+                    sparse_yaw0 = 0.0
+                    sparse_yaw1 = query_yaw_list[i]
             gallery_center_lat, gallery_center_lon = gallery_center_loc_xy_list[top1_index]
             gallery_center_lon_lat = gallery_center_lon, gallery_center_lat
             gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
             gallery_topleft_lon_lat = gallery_topleft_lon, gallery_topleft_lat
-            match_loc_lon_lat = matcher.est_center(gallery_loader.dataset[top1_index], query_loader.dataset[i], 
-                gallery_center_lon_lat, gallery_topleft_lon_lat)
+            match_loc_lon_lat = matcher.est_center(
+                gallery_loader.dataset[top1_index],
+                query_loader.dataset[i],
+                gallery_center_lon_lat,
+                gallery_topleft_lon_lat,
+                yaw0=sparse_yaw0,
+                yaw1=sparse_yaw1,
+                rotate=rotate,
+                case_name=query_list[i],
+            )
+            if hasattr(matcher, "get_last_match_info"):
+                match_info = matcher.get_last_match_info()
+            else:
+                match_info = getattr(matcher, "last_match_info", None)
             match_loc_lat_lon = match_loc_lon_lat[1], match_loc_lon_lat[0]
             dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc_lat_lon))
             match_loc = match_loc_lat_lon
@@ -233,6 +308,22 @@ def evaluate(
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))
 
         dis_list.append(get_dis(query_center_loc_xy_list[i], index, gallery_center_loc_xy_list, disk_list, match_loc))
+        if logger is not None and with_match:
+            phase_value = None
+            inliers_value = None
+            if isinstance(match_info, dict):
+                phase_value = match_info.get("phase")
+                inliers_value = match_info.get("inliers")
+            phase_str = f"第{int(phase_value)}阶段" if phase_value is not None else "未知阶段"
+            inliers_str = str(int(inliers_value)) if inliers_value is not None else "未知"
+            logger.debug(
+                "样本总结: Query=%s | Top1Gallery=%s | 最后用了%s | 内点数=%s | 最终Dis=%.2fm\n",
+                query_list[i],
+                gallery_list[top1_index],
+                phase_str,
+                inliers_str,
+                float(dis_list[i][0]),
+            )
 
         top10_list.append(get_top10(index, gallery_list))
         loc1_lat, loc1_lon = gallery_center_loc_xy_list[index[0]]
@@ -261,6 +352,8 @@ def evaluate(
             logger.debug("评估进度：%d/%d (%.1f%%)", i + 1, query_num, (i + 1) * 100.0 / query_num)
     
     metrics_time = time.perf_counter() - t_metrics
+    if with_match:
+        matcher.summarize_and_log()
     mAP = np.mean(all_ap)
     cmc = cmc / query_num
 

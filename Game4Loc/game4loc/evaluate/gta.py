@@ -192,7 +192,7 @@ def evaluate(
         logger.info("特征提取完成: 查询特征数量=%d, 图库图像数量=%d", query_num, len(gallery_list))
         if with_match and match_mode == "sparse":
             if query_yaw_list is None:
-                logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验 (可能因 --ignore_yaw 被禁用或数据未提供)")
+                logger.warning("sparse yaw 检查: query_yaw_list=None，将无法应用方向先验 (可能因 --use_yaw 未启用或数据未提供)")
             else:
                 valid_yaws = []
                 invalid_count = 0
