@@ -57,6 +57,44 @@ def get_dis_target(query_loc, target_loc):
     return geodesic((query_lat, query_lon), (query_lat, target_lon)).meters
 
 
+def project_match_center_from_h(H, image0, center_xy0, tl_xy0):
+    if H is None:
+        return None
+
+    H = np.asarray(H, dtype=np.float64)
+    if H.shape != (3, 3):
+        return None
+
+    h, w = image0.shape[-2:]
+    Xtl_0, Ytl_0 = tl_xy0
+    Xc_0, Yc_0 = center_xy0
+
+    s_x = (Xc_0 - Xtl_0) / (w / 2)
+    s_y = (Yc_0 - Ytl_0) / (h / 2)
+
+    center_pixel = np.array([w / 2, h / 2, 1.0], dtype=np.float64).reshape(3, 1)
+    proj_pixel_homog = np.dot(H, center_pixel)
+    denom = proj_pixel_homog[2, 0]
+    if not np.isfinite(denom) or abs(float(denom)) < 1e-6:
+        return None
+
+    proj_center_pixel = proj_pixel_homog[:2, 0] / denom
+    x_pixel, y_pixel = float(proj_center_pixel[0]), float(proj_center_pixel[1])
+    if (
+        (not np.isfinite(x_pixel))
+        or (not np.isfinite(y_pixel))
+        or x_pixel < -0.5 * w
+        or x_pixel > 1.5 * w
+        or y_pixel < -0.5 * h
+        or y_pixel > 1.5 * h
+    ):
+        return None
+
+    X = Xtl_0 + x_pixel * s_x
+    Y = Ytl_0 + y_pixel * s_y
+    return X, Y
+
+
 def get_top10(index, gallery_list):
     top10 = []
     for i in range(10):
@@ -128,8 +166,10 @@ def evaluate(
         match_mode='sparse',
         rotate=True,
         sparse_phase1_min_inliers=10,
+        sparse_angle_score_inlier_offset=None,
         sparse_use_multi_scale=True,
         sparse_save_final_vis=False,
+        angle_experiment=False,
         wandb_run=None,
         epoch=None,
         logger=None,
@@ -138,8 +178,8 @@ def evaluate(
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
         logger.debug(
-            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_phase1_min_inliers=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s",
-            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_phase1_min_inliers, sparse_use_multi_scale, sparse_save_final_vis,
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_phase1_min_inliers=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s, angle_experiment=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_phase1_min_inliers, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_save_final_vis, angle_experiment,
         )
     else:
         print("Extract Features and Compute Scores:")
@@ -174,6 +214,7 @@ def evaluate(
             match_mode=match_mode,
             logger=logger,
             sparse_phase1_min_inliers=sparse_phase1_min_inliers,
+            sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=sparse_use_multi_scale,
             sparse_save_final_vis=sparse_save_final_vis,
         )
@@ -271,9 +312,12 @@ def evaluate(
         # matcher.est_center (x, y) -> (lon, lat)
         match_loc = None
         match_info = None
+        angle_results = []
         sparse_yaw0 = None
         sparse_yaw1 = None
         if with_match:
+            gallery_sample = gallery_loader.dataset[top1_index]
+            query_sample = query_loader.dataset[i]
             if match_mode == "sparse":
                 if query_yaw_list is not None and i < len(query_yaw_list) and query_yaw_list[i] is not None:
                     # D2S: satellite is treated as north-up (yaw=0), drone yaw comes from metadata.
@@ -284,8 +328,8 @@ def evaluate(
             gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
             gallery_topleft_lon_lat = gallery_topleft_lon, gallery_topleft_lat
             match_loc_lon_lat = matcher.est_center(
-                gallery_loader.dataset[top1_index],
-                query_loader.dataset[i],
+                gallery_sample,
+                query_sample,
                 gallery_center_lon_lat,
                 gallery_topleft_lon_lat,
                 yaw0=sparse_yaw0,
@@ -297,6 +341,8 @@ def evaluate(
                 match_info = matcher.get_last_match_info()
             else:
                 match_info = getattr(matcher, "last_match_info", None)
+            if hasattr(matcher, "get_last_angle_results"):
+                angle_results = matcher.get_last_angle_results()
             match_loc_lat_lon = match_loc_lon_lat[1], match_loc_lon_lat[0]
             dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc_lat_lon))
             match_loc = match_loc_lat_lon
@@ -308,6 +354,46 @@ def evaluate(
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))
 
         dis_list.append(get_dis(query_center_loc_xy_list[i], index, gallery_center_loc_xy_list, disk_list, match_loc))
+        if logger is not None and angle_experiment and with_match and match_mode == "sparse":
+            logger.info(
+                "[角度实验] Query=%s | Top1Gallery=%s | 原始Top1Dis=%.2fm | 最终Dis=%.2fm | 候选角度数=%d",
+                query_list[i],
+                gallery_list[top1_index],
+                float(dis_ori_list[i]),
+                float(dis_list[i][0]),
+                len(angle_results),
+            )
+            gallery_center_lat, gallery_center_lon = gallery_center_loc_xy_list[top1_index]
+            gallery_center_lon_lat = gallery_center_lon, gallery_center_lat
+            gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
+            gallery_topleft_lon_lat = gallery_topleft_lon, gallery_topleft_lat
+            gallery_sample_for_exp = gallery_loader.dataset[top1_index]
+            for angle_result in angle_results:
+                angle_loc_lon_lat = project_match_center_from_h(
+                    angle_result.get("homography"),
+                    gallery_sample_for_exp,
+                    gallery_center_lon_lat,
+                    gallery_topleft_lon_lat,
+                )
+                if angle_loc_lon_lat is not None:
+                    angle_loc_lat_lon = angle_loc_lon_lat[1], angle_loc_lon_lat[0]
+                    angle_dis_text = f"{geodesic(query_center_loc_xy_list[i], angle_loc_lat_lon).meters:.2f}m"
+                else:
+                    angle_dis_text = "NA"
+                logger.info(
+                    "[角度实验] phase=%d | search=%.1f° | rot=%.1f° | matches=%d | inliers=%d | ratio=%.4f | score=%s | dist=%s | selected=%s | status=%s",
+                    int(angle_result.get("phase", 0)),
+                    float(angle_result.get("search_angle", 0.0)),
+                    float(angle_result.get("rot_angle", 0.0)),
+                    int(angle_result.get("matches", 0)),
+                    int(angle_result.get("inliers", 0)),
+                    float(angle_result.get("ratio", 0.0)),
+                    "NA" if angle_result.get("score") is None else f"{float(angle_result.get('score', 0.0)):.4f}",
+                    angle_dis_text,
+                    "yes" if angle_result.get("selected") else "no",
+                    angle_result.get("status", "unknown"),
+                )
+            logger.info("")
         if logger is not None and with_match:
             phase_value = None
             inliers_value = None

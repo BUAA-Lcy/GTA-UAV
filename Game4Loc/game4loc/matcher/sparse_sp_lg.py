@@ -19,6 +19,7 @@ class SparseSpLgMatcher:
         device="cuda",
         logger=None,
         phase1_min_inliers=10,
+        angle_score_inlier_offset=None,
         use_multi_scale=True,
         save_final_matches=False,
     ):
@@ -84,6 +85,7 @@ class SparseSpLgMatcher:
         self.sparse_max_matches_per_scale = 1024  # Increased drastically to keep more matches
         self.sparse_max_total_matches = 4096      # Increased drastically
         self.sparse_phase1_min_inliers = max(0, int(phase1_min_inliers))
+        self.sparse_angle_score_inlier_offset = None if angle_score_inlier_offset is None else float(angle_score_inlier_offset)
         self.sparse_use_multi_scale = bool(use_multi_scale)
         self.sparse_min_inliers = 15 # 提高最低内点要求，如果二阶段抢救完还不到15个，就回退
         self.sparse_min_inlier_ratio = 0.001
@@ -115,6 +117,7 @@ class SparseSpLgMatcher:
             "inliers_list": [],
         }
         self.last_match_info = None
+        self.last_angle_results = []
 
     def _log(self, level, msg, *args):
         if self.logger is not None:
@@ -228,6 +231,46 @@ class SparseSpLgMatcher:
         sanitized = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in name)
         sanitized = "_".join(part for part in sanitized.split("_") if part)
         return sanitized[:120]
+
+    def _compute_candidate_score(self, inliers, inlier_ratio):
+        if self.sparse_angle_score_inlier_offset is None:
+            return None
+        return float(inlier_ratio) * max(float(inliers) - float(self.sparse_angle_score_inlier_offset), 0.0)
+
+    def _prefer_candidate(self, inliers, inlier_ratio, best_inliers, best_ratio):
+        current_score = self._compute_candidate_score(inliers, inlier_ratio)
+        best_score = self._compute_candidate_score(best_inliers, best_ratio) if best_inliers >= 0 else None
+
+        if current_score is not None and best_score is not None:
+            if current_score > best_score:
+                return True
+            if current_score == best_score and inliers > best_inliers:
+                return True
+            if current_score == best_score and inliers == best_inliers and inlier_ratio > best_ratio:
+                return True
+            return False
+
+        if inliers > best_inliers:
+            return True
+        if inliers == best_inliers and inlier_ratio > best_ratio:
+            return True
+        return False
+
+    def _build_angle_result(self, phase, search_angle, rot_angle, matches, inliers, ratio, total_kpts0, H, status, score):
+        H_value = None if H is None else np.asarray(H, dtype=np.float32).copy()
+        return {
+            "phase": int(phase),
+            "search_angle": float(search_angle),
+            "rot_angle": float(rot_angle),
+            "matches": int(matches),
+            "inliers": int(inliers),
+            "ratio": float(ratio),
+            "score": None if score is None else float(score),
+            "total_kpts0": int(total_kpts0),
+            "homography": H_value,
+            "status": str(status),
+            "selected": False,
+        }
 
     def _save_sparse_bad_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None, case_name=None):
         self._save_sparse_case(
@@ -346,6 +389,7 @@ class SparseSpLgMatcher:
         """提取公共逻辑：针对一组候选角度进行匹配，并返回最优结果和日志。"""
         if ransac_method is None:
             ransac_method = self.sparse_ransac_method
+        phase_idx = 2 if "二阶段" in str(run_name) else 1
             
         best_H = np.eye(3)
         best_inliers = -1
@@ -353,6 +397,7 @@ class SparseSpLgMatcher:
         best_stats = None
         best_angle = 0.0
         rotation_search_logs = []
+        angle_results = []
 
         img0_sp = image0 if image0.shape[1] == 1 else F.rgb_to_grayscale(image0)
         img1_sp = image1 if image1.shape[1] == 1 else F.rgb_to_grayscale(image1)
@@ -495,8 +540,22 @@ class SparseSpLgMatcher:
                         inlier_ratio = float(inliers) / float(max(1, mk0.shape[0]))
                 
                 rotation_search_logs.append(f"[{run_name} {search_angle:>5.1f}°: Kpts0={total_kpts0:>4d} | Matches={mk0.shape[0]:>4d} | Inliers={inliers:>3d} | Ratio={inlier_ratio:.3f}]")
+                angle_results.append(
+                    self._build_angle_result(
+                        phase=phase_idx,
+                        search_angle=search_angle,
+                        rot_angle=rot_angle,
+                        matches=mk0.shape[0],
+                        inliers=inliers,
+                        ratio=inlier_ratio,
+                        score=self._compute_candidate_score(inliers, inlier_ratio),
+                        total_kpts0=total_kpts0,
+                        H=H,
+                        status="ok",
+                    )
+                )
 
-                if inliers > best_inliers or (inliers == best_inliers and inlier_ratio > best_ratio):
+                if self._prefer_candidate(inliers, inlier_ratio, best_inliers, best_ratio):
                     best_inliers, best_ratio, best_H, best_angle = inliers, inlier_ratio, H, rot_angle
                     best_stats = {
                         "preproc_s": t_preproc, "sp_detect_s": t_sp_detect, "lg_match_s": t_lg_match, "ransac_h_s": t_h,
@@ -507,9 +566,23 @@ class SparseSpLgMatcher:
             except Exception as e:
                 self._log(logging.WARNING, "SP+LG %s 异常 (Angle: %.1f): %s", run_name, search_angle, str(e))
                 rotation_search_logs.append(f"[{run_name} {search_angle:>5.1f}°: Exception]")
+                angle_results.append(
+                    self._build_angle_result(
+                        phase=phase_idx,
+                        search_angle=search_angle,
+                        rot_angle=rot_angle if "rot_angle" in locals() else 0.0,
+                        matches=0,
+                        inliers=0,
+                        ratio=0.0,
+                        score=None,
+                        total_kpts0=0,
+                        H=None,
+                        status="exception",
+                    )
+                )
                 continue
 
-        return best_inliers, best_ratio, best_H, best_angle, best_stats, rotation_search_logs
+        return best_inliers, best_ratio, best_H, best_angle, best_stats, rotation_search_logs, angle_results
 
     def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None):
         t_total = time.perf_counter()
@@ -523,10 +596,11 @@ class SparseSpLgMatcher:
         candidate_angles_p1 = self._build_candidate_angles(rotate_step_p1)
         thresh_p1 = self.sparse_ransac_reproj_threshold
         
-        b_inliers, b_ratio, b_H, b_angle, b_stats, logs_p1 = self._run_matching_for_angles(
+        b_inliers, b_ratio, b_H, b_angle, b_stats, logs_p1, angle_results_p1 = self._run_matching_for_angles(
             image0, image1, yaw0, yaw1, candidate_angles_p1, thresh_p1, "一阶段"
         )
         all_logs = logs_p1
+        all_angle_results = list(angle_results_p1)
         
         # Phase 2: if phase 1 is weak, retry with half the step and a looser RANSAC threshold.
         if rotate_step_p1 > 0 and b_inliers < self.sparse_phase1_min_inliers:
@@ -546,10 +620,11 @@ class SparseSpLgMatcher:
             # 而朴素的 RANSAC 配合超大的 threshold，就是“强行”找能框住最多点的几何体，更容易在绝境中捞出点。
             method_p2 = cv2.RANSAC
             
-            b_inliers_p2, b_ratio_p2, b_H_p2, b_angle_p2, b_stats_p2, logs_p2 = self._run_matching_for_angles(
+            b_inliers_p2, b_ratio_p2, b_H_p2, b_angle_p2, b_stats_p2, logs_p2, angle_results_p2 = self._run_matching_for_angles(
                 image0, image1, yaw0, yaw1, candidate_angles_p2, thresh_p2, "二阶段", ransac_method=method_p2
             )
             all_logs.extend(logs_p2)
+            all_angle_results.extend(angle_results_p2)
             
             # 如果二阶段找到了更多的内点，就采用二阶段的结果
             if b_inliers_p2 > b_inliers:
@@ -561,6 +636,7 @@ class SparseSpLgMatcher:
 
         total_t = time.perf_counter() - t_total
         search_log_str = " | ".join(all_logs)
+        self.last_angle_results = all_angle_results
 
         if b_stats is None:
             self.stats["n_queries"] += 1
@@ -607,6 +683,13 @@ class SparseSpLgMatcher:
             yaw_angle=rot_angle,
             case_name=case_name,
         )
+        for angle_result in self.last_angle_results:
+            angle_result["selected"] = (
+                int(angle_result.get("phase", 0)) == selected_phase
+                and abs(float(angle_result.get("rot_angle", 0.0)) - float(rot_angle)) < 1e-6
+                and int(angle_result.get("inliers", -1)) == int(inliers)
+                and abs(float(angle_result.get("ratio", -1.0)) - float(inlier_ratio)) < 1e-6
+            )
             
         self.stats["n_queries"] += 1
         self.stats["preproc_s"] += b_stats["preproc_s"]
@@ -678,3 +761,6 @@ class SparseSpLgMatcher:
 
     def get_last_match_info(self):
         return self.last_match_info
+
+    def get_last_angle_results(self):
+        return self.last_angle_results

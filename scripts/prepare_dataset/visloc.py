@@ -379,12 +379,12 @@ def tile_expand(str_i, cur_tile_x, cur_tile_y, p_img_xy_scale, zoom_level, tile_
     return tile_iou_expand_list, tile_iou_expand_weight_list, tile_iou_expand_loc_lat_lon_list, tile_semi_iou_expand_list, tile_semi_iou_expand_weight_list, tile_semi_iou_expand_loc_lat_lon_list
 
 def process_per_image(drone_meta_data):
-    file_dir, str_i, drone_img, lat, lon, height, phi, sate_lt_lat, sate_lt_lon, sate_rb_lat, sate_rb_lon, sate_pix_h, sate_pix_w = drone_meta_data
+    file_dir, str_i, drone_img, lat, lon, height, omega, kappa, phi1, phi2, sate_lt_lat, sate_lt_lon, sate_rb_lat, sate_rb_lon, sate_pix_h, sate_pix_w = drone_meta_data
 
     # debug = (drone_img == '01_0015.JPG')
     debug = False
 
-    p_latlon = calculate_coverage_endpoints(heading_angle=phi, height=height, cur_lat=lat, cur_lon=lon, debug=debug)
+    p_latlon = calculate_coverage_endpoints(heading_angle=phi1, height=height, cur_lat=lat, cur_lon=lon, debug=debug)
     
     if debug:
         print(p_latlon)
@@ -410,6 +410,13 @@ def process_per_image(drone_meta_data):
         "drone_img": drone_img,
         "lat": lat,
         "lon": lon,
+        "height": height,
+        "omega": omega,
+        "kappa": kappa,
+        "phi1": phi1,
+        "phi2": phi2,
+        "drone_yaw": phi1,
+        "cam_yaw": phi1,
         "sate_img_dir": os.path.join(os.path.dirname(file_dir), 'satellite'),
         "pair_pos_sate_img_list": [],
         "pair_pos_sate_weight_list": [],
@@ -584,7 +591,10 @@ def process_visloc_data(root, save_root, split_type):
                     float(row[3]),
                     float(row[4]),
                     float(row[5]),
-                    float(row[-2]),
+                    float(row[6]),
+                    float(row[7]),
+                    float(row[8]),
+                    float(row[9]),
                     sate_meta_data[str_i]["LT_lat"],
                     sate_meta_data[str_i]["LT_lon"],
                     sate_meta_data[str_i]["RB_lat"],
@@ -670,13 +680,17 @@ def write_json(pickle_root, root, split_type):
                 "pair_pos_semipos_sate_weight_list": pair_drone2sate['pair_pos_semipos_sate_weight_list'],
                 "pair_pos_semipos_sate_loc_lat_lon_list": pair_drone2sate['pair_pos_semipos_sate_loc_lat_lon_list'],
                 "drone_metadata": {
-                    "height": None,
+                    "height": pair_drone2sate.get('height'),
+                    "omega": pair_drone2sate.get('omega'),
+                    "kappa": pair_drone2sate.get('kappa'),
+                    "phi1": pair_drone2sate.get('phi1'),
+                    "phi2": pair_drone2sate.get('phi2'),
                     "drone_roll": None,
                     "drone_pitch": None,
-                    "drone_yaw": None,
+                    "drone_yaw": pair_drone2sate.get('drone_yaw', pair_drone2sate.get('phi1')),
                     "cam_roll": None,
                     "cam_pitch": None,
-                    "cam_yaw": None,
+                    "cam_yaw": pair_drone2sate.get('cam_yaw', pair_drone2sate.get('phi1')),
                 }
             })
         save_path = os.path.join(root, f'{split_type}-drone2sate-{type}.json')

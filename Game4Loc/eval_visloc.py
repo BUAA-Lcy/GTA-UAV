@@ -33,6 +33,35 @@ def parse_bool(value):
     raise argparse.ArgumentTypeError("Boolean value expected, for example True or False")
 
 
+def normalize_angle_deg(angle):
+    return ((float(angle) + 180.0) % 360.0) - 180.0
+
+
+def build_query_yaw_list(dataset, indices):
+    raw_yaws = getattr(dataset, "images_yaw", None)
+    if raw_yaws is None:
+        return None
+
+    query_yaws = []
+    for index in indices:
+        if index >= len(raw_yaws):
+            query_yaws.append(None)
+            continue
+        yaw_value = raw_yaws[index]
+        if yaw_value is None:
+            query_yaws.append(None)
+            continue
+        try:
+            yaw_value = float(yaw_value)
+        except (TypeError, ValueError):
+            query_yaws.append(None)
+            continue
+        # VisLoc default convention: satellite is north-up, so query drone images
+        # should be rotated by -Phi1 (clockwise by Phi1 degrees when Phi1 > 0).
+        query_yaws.append(normalize_angle_deg(-yaw_value))
+    return query_yaws
+
+
 @dataclass
 class Configuration:
     # Model
@@ -54,8 +83,10 @@ class Configuration:
     rotate: float = 0.0
     use_yaw: bool = False
     sparse_phase1_min_inliers: int = 30
+    sparse_angle_score_inlier_offset: int = 25
     multi_scale: bool = True
     sparse_save_final_vis: bool = True
+    angle_experiment: bool = False
 
     test_mode: str = "pos"
     query_mode: str = "D2S"
@@ -121,7 +152,10 @@ def eval_script(config):
             logger.info("旋转搜索: 关闭")
         if config.match_mode == "sparse":
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "启用 (如果数据提供)" if config.use_yaw else "关闭 (默认仅做旋转搜索)")
+            if config.use_yaw:
+                logger.info("VisLoc yaw 默认约定: 使用 -Phi1 对齐正北卫星图 (即 Phi1>0 时查询航拍图顺时针旋转 Phi1°)")
             logger.info("VisLoc 稀疏匹配一阶段触发二阶段阈值: %d", config.sparse_phase1_min_inliers)
+            logger.info("VisLoc 稀疏最佳角度评分: score = ratio * max(inliers - %d, 0)", config.sparse_angle_score_inlier_offset)
             logger.info("VisLoc 稀疏多尺度匹配: %s", "开启" if config.multi_scale else "关闭")
             logger.info(
                 "VisLoc 稀疏最终匹配可视化: %s (目录=%s, 最多=%d张)",
@@ -129,6 +163,7 @@ def eval_script(config):
                 "Log/visloc_sparse_final_matches",
                 200,
             )
+            logger.info("VisLoc 角度实验日志: %s", "开启" if config.angle_experiment else "关闭")
             if config.use_yaw and config.rotate <= 0:
                 logger.info("当前 rotate<=0，将不执行任何旋转，因此 yaw 先验不会生效")
     log_config(logger, config)
@@ -230,14 +265,13 @@ def eval_script(config):
         query_dataset_test = Subset(query_dataset_test, query_indices)
         query_img_list = [base_query_dataset.images_name[i] for i in query_indices]
         query_center_loc_xy_list = [base_query_dataset.images_center_loc_xy[i] for i in query_indices]
-        full_q_yaws = getattr(base_query_dataset, "images_yaw", [])
-        if config.query_mode == "D2S" and config.use_yaw and len(full_q_yaws) > 0:
-            query_yaw_list = [full_q_yaws[i] for i in query_indices]
+        if config.query_mode == "D2S" and config.use_yaw:
+            query_yaw_list = build_query_yaw_list(base_query_dataset, query_indices)
     else:
         query_img_list = query_dataset_test.images_name
         query_center_loc_xy_list = query_dataset_test.images_center_loc_xy
         if config.query_mode == "D2S" and config.use_yaw:
-            query_yaw_list = getattr(query_dataset_test, "images_yaw", None)
+            query_yaw_list = build_query_yaw_list(query_dataset_test, range(len(query_dataset_test)))
 
     gallery_center_loc_xy_list = gallery_dataset_test.images_center_loc_xy
     gallery_topleft_loc_xy_list = gallery_dataset_test.images_topleft_loc_xy
@@ -267,6 +301,10 @@ def eval_script(config):
     if config.query_mode != "D2S" and config.with_match:
         logger.warning("VisLoc 的 with_match 仅支持 D2S 评估，当前 query_mode=%s，将自动关闭 with_match。", config.query_mode)
         effective_with_match = False
+    effective_angle_experiment = config.angle_experiment
+    if effective_angle_experiment and (not effective_with_match or config.match_mode != "sparse"):
+        logger.warning("角度实验仅支持 VisLoc 的 with_match+sparse 评估，当前配置将自动关闭 angle_experiment。")
+        effective_angle_experiment = False
 
     logger.info("%s[UAV-VisLoc 测试评估]%s", 30 * "-", 30 * "-")
 
@@ -294,8 +332,10 @@ def eval_script(config):
             match_mode=config.match_mode,
             rotate=config.rotate,
             sparse_phase1_min_inliers=config.sparse_phase1_min_inliers,
+            sparse_angle_score_inlier_offset=config.sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=config.multi_scale,
             sparse_save_final_vis=config.sparse_save_final_vis,
+            angle_experiment=effective_angle_experiment,
             wandb_run=wandb_run,
             logger=logger,
         )
@@ -328,6 +368,7 @@ def parse_args():
     parser.add_argument("--rotate", type=parse_rotate_step, nargs="?", const=90.0, default=0.0, help="Enable rotation search with an optional step in degrees. '--rotate' defaults to 90. In sparse mode phase 2 uses half of this value. Default is 0 when the flag is omitted, which disables all rotation.")
     parser.add_argument("--no_rotate", action="store_const", const=0.0, dest="rotate", help=argparse.SUPPRESS)
     parser.add_argument("--multi_scale", type=parse_bool, nargs="?", const=True, default=True, help="Enable sparse multi-scale matching. Default is True. Use '--multi_scale False' to disable.")
+    parser.add_argument("--angle_experiment", action="store_true", help="Log detailed per-angle sparse matching results for each VisLoc sample")
     parser.add_argument("--query_limit", type=int, default=0, help="Limit the number of queries for quick evaluation (0 for all)")
     parser.add_argument("--iteration", action="store_true", help="Only evaluate on a fixed 1/10 query subset for faster iteration")
     parser.add_argument("--plot_acc_threshold", action="store_true", help="Print accuracy-threshold curve values after evaluation")
@@ -356,6 +397,7 @@ if __name__ == "__main__":
     config.use_yaw = args.use_yaw
     config.rotate = args.rotate
     config.multi_scale = args.multi_scale
+    config.angle_experiment = args.angle_experiment
     config.query_limit = args.query_limit
     config.iteration = args.iteration
     config.plot_acc_threshold = args.plot_acc_threshold

@@ -328,6 +328,7 @@ class GimDKM:
             logger=None,
             match_mode='sparse',
             sparse_phase1_min_inliers=10,
+            sparse_angle_score_inlier_offset=None,
             sparse_use_multi_scale=True,
             sparse_save_final_vis=False,
         ):
@@ -357,6 +358,7 @@ class GimDKM:
                 device=device,
                 logger=logger,
                 phase1_min_inliers=sparse_phase1_min_inliers,
+                angle_score_inlier_offset=sparse_angle_score_inlier_offset,
                 use_multi_scale=sparse_use_multi_scale,
                 save_final_matches=sparse_save_final_vis,
             )
@@ -378,6 +380,7 @@ class GimDKM:
             'empty_kpts': 0,
         }
         self.last_match_info = None
+        self.last_angle_results = []
         self._log(logging.INFO, "with_match matcher mode: %s", self.match_mode)
 
     def _log(self, level, msg, *args):
@@ -459,9 +462,14 @@ class GimDKM:
                 self.last_match_info = dict(self.sparse_matcher.last_match_info)
             else:
                 self.last_match_info = None
+            if self.sparse_matcher is not None:
+                self.last_angle_results = [dict(item) for item in self.sparse_matcher.get_last_angle_results()]
+            else:
+                self.last_angle_results = []
             return H
 
         t_total = time.perf_counter()
+        self.last_angle_results = []
         rotate_step = self._normalize_rotate_step(rotate)
         if rotate_step <= 1e-6:
             yaw0 = None
@@ -655,11 +663,15 @@ class GimDKM:
             "rot_angle": float(best_rot_angle),
             "n_kept": int(best_stats["n_kept"]),
         }
+        self.last_angle_results = []
 
         return best_H
 
     def get_last_match_info(self):
         return self.last_match_info
+
+    def get_last_angle_results(self):
+        return self.last_angle_results
     
     def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True, case_name=None):
         t0 = time.perf_counter()
