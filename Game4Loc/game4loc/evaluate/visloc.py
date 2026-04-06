@@ -81,12 +81,19 @@ def predict(train_config, model, dataloader):
     
     with torch.no_grad():
         
-        for img in bar:
+        for img_data in bar:
+            if isinstance(img_data, (list, tuple)) and len(img_data) == 2:
+                img, pose = img_data
+            else:
+                img = img_data
+                pose = None
                     
             with autocast():
             
                 img = img.to(train_config.device)
-                img_feature = model(img1=img)
+                if pose is not None:
+                    pose = pose.to(train_config.device)
+                img_feature = model(img1=img, pose=pose)
             
                 # normalize is calculated in fp32
                 if train_config.normalize_features:
@@ -220,7 +227,13 @@ def evaluate(
             gallery_center_lon_lat = gallery_center_lon, gallery_center_lat
             gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
             gallery_topleft_lon_lat = gallery_topleft_lon, gallery_topleft_lat
-            match_loc_lon_lat = matcher.est_center(gallery_loader.dataset[top1_index], query_loader.dataset[i], 
+            gallery_sample = gallery_loader.dataset[top1_index]
+            query_sample = query_loader.dataset[i]
+            if isinstance(gallery_sample, (tuple, list)):
+                gallery_sample = gallery_sample[0]
+            if isinstance(query_sample, (tuple, list)):
+                query_sample = query_sample[0]
+            match_loc_lon_lat = matcher.est_center(gallery_sample, query_sample, 
                 gallery_center_lon_lat, gallery_topleft_lon_lat)
             match_loc_lat_lon = match_loc_lon_lat[1], match_loc_lon_lat[0]
             dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc_lat_lon))

@@ -7,6 +7,21 @@ import torch.nn.functional as F
 from ..utils import AverageMeter
 
 
+def _unpack_weighted_batch(batch):
+    if not isinstance(batch, (list, tuple)):
+        raise ValueError("Expected a tuple/list batch for weighted training.")
+
+    if len(batch) == 4:
+        query, reference, weight, query_pose = batch
+    elif len(batch) == 3:
+        query, reference, weight = batch
+        query_pose = None
+    else:
+        raise ValueError(f"Unexpected batch format with length {len(batch)}")
+
+    return query, reference, weight, query_pose
+
+
 def train_with_weight(train_config, model, dataloader, loss_function, optimizer, scheduler=None, scaler=None, recon_weight=0.1, loss_recon=None, train_with_recon=False, with_weight=False, logger=None, wandb_run=None, epoch=None):
 
     # set model train mode
@@ -35,7 +50,8 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
         "forward_loss": 0.0,
         "backward_optim": 0.0,
     }
-    for query, reference, weight, query_pose in bar:
+    for batch in bar:
+        query, reference, weight, query_pose = _unpack_weighted_batch(batch)
         # print('jyxjyxjyx', query.shape)
         start_time = time.time()
         
@@ -46,7 +62,8 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
                 query = query.to(train_config.device)
                 reference = reference.to(train_config.device)
                 weight = weight.to(train_config.device)
-                query_pose = query_pose.to(train_config.device)
+                if query_pose is not None:
+                    query_pose = query_pose.to(train_config.device)
                 stage_meter["to_device"] += time.perf_counter() - t0
             
                 # # Forward pass
@@ -107,7 +124,8 @@ def train_with_weight(train_config, model, dataloader, loss_function, optimizer,
             query = query.to(train_config.device)
             reference = reference.to(train_config.device)
             weight = weight.to(train_config.device)
-            query_pose = query_pose.to(train_config.device)
+            if query_pose is not None:
+                query_pose = query_pose.to(train_config.device)
             stage_meter["to_device"] += time.perf_counter() - t0
         
             # # Forward pass

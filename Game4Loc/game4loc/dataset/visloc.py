@@ -23,6 +23,7 @@ import random
 import itertools
 from geopy.distance import geodesic
 import json
+import torch
 
 
 TILE_SIZE = 256
@@ -124,6 +125,71 @@ def get_sate_data(root_dir):
     return sate_img_dir_list, sate_img_list
 
 
+def _to_float_or_none(value):
+    if value is None:
+        return None
+    try:
+        if value == "":
+            return None
+    except TypeError:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_query_pose_and_yaw(pair_drone2sate):
+    drone_meta = pair_drone2sate.get("drone_metadata", {})
+    if not isinstance(drone_meta, dict):
+        drone_meta = {}
+
+    height = _to_float_or_none(drone_meta.get("height"))
+    cam_pitch = _to_float_or_none(drone_meta.get("cam_pitch", drone_meta.get("drone_pitch")))
+    cam_roll = _to_float_or_none(drone_meta.get("cam_roll", drone_meta.get("drone_roll")))
+    cam_yaw = _to_float_or_none(
+        drone_meta.get("cam_yaw", drone_meta.get("drone_yaw", drone_meta.get("phi1")))
+    )
+
+    query_pose = None
+    if height is not None and cam_pitch is not None and cam_roll is not None:
+        query_pose = (height, cam_pitch, cam_roll)
+
+    return query_pose, cam_yaw
+
+
+def rotate_image_clockwise(img, angle_clockwise_deg, interpolation=cv2.INTER_LINEAR):
+    if angle_clockwise_deg is None:
+        return img
+
+    angle_ccw_deg = -float(angle_clockwise_deg)
+    h, w = img.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    rot_mat = cv2.getRotationMatrix2D(center, angle_ccw_deg, 1.0)
+    return cv2.warpAffine(
+        img,
+        rot_mat,
+        (w, h),
+        flags=interpolation,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+
+
+def rotate_pose_to_north_aligned_frame(query_pose, yaw_cw_deg):
+    if query_pose is None or yaw_cw_deg is None:
+        return query_pose
+
+    height, pitch_deg, roll_deg = query_pose
+    yaw_rad = math.radians(float(yaw_cw_deg))
+
+    # When the UAV image is rotated clockwise by Phi1, the tilt components need to
+    # be re-expressed in the rotated image frame before they are consumed by pose_to_grid.
+    pitch_aligned = pitch_deg * math.cos(yaw_rad) + roll_deg * math.sin(yaw_rad)
+    roll_aligned = roll_deg * math.cos(yaw_rad) - pitch_deg * math.sin(yaw_rad)
+
+    return (height, pitch_aligned, roll_aligned)
+
+
 class VisLocDatasetTrain(Dataset):
     
     def __init__(self,
@@ -135,12 +201,16 @@ class VisLocDatasetTrain(Dataset):
                  prob_flip=0.5,
                  shuffle_batch_size=128,
                  mode='pos_semipos',
-                 train_ratio=1.0):
+                 train_ratio=1.0,
+                 use_pose=False,
+                 rotate_aerial_to_north=False):
         super().__init__()
         
         with open(os.path.join(data_root, pairs_meta_file), 'r', encoding='utf-8') as f:
             pairs_meta_data = json.load(f)
         self.data_root = data_root
+        self.use_pose = use_pose
+        self.rotate_aerial_to_north = rotate_aerial_to_north
 
         self.pairs = []
         self.pairs_sate2drone_dict = {}
@@ -151,6 +221,13 @@ class VisLocDatasetTrain(Dataset):
             drone_img_dir = pair_drone2sate['drone_img_dir']
             drone_img_name = pair_drone2sate['drone_img_name']
             sate_img_dir = pair_drone2sate['sate_img_dir']
+            query_pose, query_yaw = _extract_query_pose_and_yaw(pair_drone2sate)
+            if self.use_pose and query_pose is None:
+                raise KeyError(f"Pose metadata missing for {drone_img_name} in {pairs_meta_file}")
+            if self.rotate_aerial_to_north and query_yaw is None:
+                raise KeyError(f"Yaw metadata missing for {drone_img_name} in {pairs_meta_file}")
+            if self.rotate_aerial_to_north and self.use_pose:
+                query_pose = rotate_pose_to_north_aligned_frame(query_pose, query_yaw)
             # Training with Positive-only data or Positive+Semi-positive data
             pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
             pair_sate_weight_list = pair_drone2sate[f'pair_{mode}_sate_weight_list']
@@ -159,7 +236,12 @@ class VisLocDatasetTrain(Dataset):
 
             for pair_sate_img, pair_sate_weight in zip(pair_sate_img_list, pair_sate_weight_list):
                 sate_img_file = os.path.join(data_root, sate_img_dir, pair_sate_img)
-                self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight))
+                sample = [drone_img_file, sate_img_file, pair_sate_weight]
+                if self.use_pose:
+                    sample.append(query_pose)
+                if self.rotate_aerial_to_north:
+                    sample.append(query_yaw)
+                self.pairs.append(tuple(sample))
 
             # Build Graph with All Edges (drone, sate)
             pair_all_sate_img_list = pair_drone2sate['pair_pos_semipos_sate_img_list']
@@ -182,11 +264,23 @@ class VisLocDatasetTrain(Dataset):
     
     def __getitem__(self, index):
         
-        query_img_path, gallery_img_path, positive_weight = self.samples[index]
+        sample = self.samples[index]
+        query_img_path, gallery_img_path, positive_weight = sample[:3]
+        item_idx = 3
+        query_pose = None
+        query_yaw = None
+        if self.use_pose:
+            query_pose = sample[item_idx]
+            item_idx += 1
+        if self.rotate_aerial_to_north:
+            query_yaw = sample[item_idx]
         
         # for query there is only one file in folder
         query_img = cv2.imread(query_img_path)
         query_img = cv2.cvtColor(query_img, cv2.COLOR_BGR2RGB)
+        if self.rotate_aerial_to_north:
+            # UAV-VisLoc gives Phi1 in CSV. Rotating the query clockwise by Phi1 aligns it with the fixed satellite map.
+            query_img = rotate_image_clockwise(query_img, query_yaw, interpolation=cv2.INTER_LINEAR)
         
         gallery_img = cv2.imread(gallery_img_path)
         gallery_img = cv2.cvtColor(gallery_img, cv2.COLOR_BGR2RGB)
@@ -194,6 +288,8 @@ class VisLocDatasetTrain(Dataset):
         if np.random.random() < self.prob_flip:
             query_img = cv2.flip(query_img, 1)
             gallery_img = cv2.flip(gallery_img, 1) 
+            if query_pose is not None:
+                query_pose = (query_pose[0], query_pose[1], -query_pose[2])
         
         # image transforms
         if self.transforms_query is not None:
@@ -202,6 +298,10 @@ class VisLocDatasetTrain(Dataset):
         if self.transforms_gallery is not None:
             gallery_img = self.transforms_gallery(image=gallery_img)['image']
         
+        if self.use_pose:
+            query_pose_tensor = torch.tensor(query_pose, dtype=torch.float32)
+            return query_img, gallery_img, positive_weight, query_pose_tensor
+
         return query_img, gallery_img, positive_weight
 
     def __len__(self):
@@ -243,7 +343,7 @@ class VisLocDatasetTrain(Dataset):
                 if len(pair_pool) > 0:
                     pair = pair_pool.pop(0)
                     
-                    drone_img, sate_img, _ = pair
+                    drone_img, sate_img = pair[:2]
 
                     drone_img_name = drone_img.split('/')[-1]
                     sate_img_name = sate_img.split('/')[-1]
@@ -309,6 +409,8 @@ class VisLocDatasetEval(Dataset):
                  query_mode='D2S',
                  pairs_sate2drone_dict=None,
                  transforms=None,
+                 use_pose=False,
+                 rotate_aerial_to_north=False,
                  ):
         super().__init__()
         
@@ -316,10 +418,14 @@ class VisLocDatasetEval(Dataset):
             pairs_meta_data = json.load(f)
         self.data_root = data_root
         sate_img_dir = os.path.join(data_root, sate_img_dir)    
+        self.use_pose = use_pose
+        self.rotate_aerial_to_north = rotate_aerial_to_north
 
         self.images_name = []
         self.images_path = []
         self.images_center_loc_xy = []
+        self.images_pose = []
+        self.images_yaw = []
         # For finer localization with image matching
         self.images_topleft_loc_xy = []
 
@@ -332,6 +438,13 @@ class VisLocDatasetEval(Dataset):
                 drone_img_name = pair_drone2sate['drone_img_name']
                 drone_img_dir = pair_drone2sate['drone_img_dir']
                 drone_loc_xy = pair_drone2sate['drone_loc_lat_lon']
+                query_pose, query_yaw = _extract_query_pose_and_yaw(pair_drone2sate)
+                if self.use_pose and query_pose is None:
+                    raise KeyError(f"Pose metadata missing for {drone_img_name} in {pairs_meta_file}")
+                if self.rotate_aerial_to_north and query_yaw is None:
+                    raise KeyError(f"Yaw metadata missing for {drone_img_name} in {pairs_meta_file}")
+                if self.rotate_aerial_to_north and self.use_pose:
+                    query_pose = rotate_pose_to_north_aligned_frame(query_pose, query_yaw)
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:
@@ -342,6 +455,8 @@ class VisLocDatasetEval(Dataset):
                     self.images_path.append(os.path.join(data_root, drone_img_dir, drone_img_name))
                     self.images_name.append(drone_img_name)
                     self.images_center_loc_xy.append((drone_loc_xy[0], drone_loc_xy[1]))
+                    self.images_pose.append(query_pose)
+                    self.images_yaw.append(query_yaw)
 
         elif view == 'sate':
             if query_mode == 'D2S':
@@ -371,11 +486,17 @@ class VisLocDatasetEval(Dataset):
         
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if self.rotate_aerial_to_north and len(self.images_yaw) > 0:
+            img = rotate_image_clockwise(img, self.images_yaw[index], interpolation=cv2.INTER_LINEAR)
         
         # image transforms
         if self.transforms is not None:
             img = self.transforms(image=img)['image']
-        
+
+        if self.use_pose and len(self.images_pose) > 0:
+            query_pose_tensor = torch.tensor(self.images_pose[index], dtype=torch.float32)
+            return img, query_pose_tensor
+
         return img
 
     def __len__(self):
@@ -387,7 +508,8 @@ class VisLocDatasetEval(Dataset):
 
 def get_transforms(img_size,
                    mean=[0.485, 0.456, 0.406],
-                   std=[0.229, 0.224, 0.225]):
+                   std=[0.229, 0.224, 0.225],
+                   random_rotate90=True):
     
 
     val_transforms = A.Compose([A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
@@ -396,6 +518,8 @@ def get_transforms(img_size,
                                 ])
                                 
                              
+    p_rot = 1.0 if random_rotate90 else 0.0
+
     train_sat_transforms = A.Compose([A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
                                       A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
                                       A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5),
@@ -413,7 +537,7 @@ def get_transforms(img_size,
                                                                min_width=int(0.1*img_size[0]),
                                                                p=1.0),
                                               ], p=0.3),
-                                      A.RandomRotate90(p=1.0),
+                                      A.RandomRotate90(p=p_rot),
                                       A.Normalize(mean, std),
                                       ToTensorV2(),
                                       ])
@@ -435,7 +559,7 @@ def get_transforms(img_size,
                                                                  min_width=int(0.1*img_size[0]),
                                                                  p=1.0),
                                               ], p=0.3),
-                                        A.RandomRotate90(p=1.0),
+                                        A.RandomRotate90(p=p_rot),
                                         A.Normalize(mean, std),
                                         ToTensorV2(),
                                         ])
