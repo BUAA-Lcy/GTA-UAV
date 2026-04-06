@@ -67,6 +67,34 @@ SATE_SIZE = {
     '11': (16582, 29592),
 }
 
+
+def build_visloc_drone_metadata(height, omega, kappa, phi1, phi2):
+    return {
+        "height": float(height),
+        "drone_roll": float(kappa),
+        "drone_pitch": float(omega),
+        "drone_yaw": float(phi1),
+        "cam_roll": float(kappa),
+        "cam_pitch": float(omega),
+        "cam_yaw": float(phi1),
+        "cam_yaw_phi2": float(phi2),
+        "phi1": float(phi1),
+        "phi2": float(phi2),
+        "query_rotation_cw_deg": float(phi1),
+    }
+
+
+def build_visloc_drone_metadata_optional(row):
+    if len(row) < 10:
+        return {}
+    return build_visloc_drone_metadata(
+        height=float(row[5]),
+        omega=float(row[6]),
+        kappa=float(row[7]),
+        phi1=float(row[8]),
+        phi2=float(row[9]),
+    )
+
 def tile_center_latlon(left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, zoom, x, y, str_i):
     """Calculate the center lat/lon of a tile."""
     sate_h, sate_w = SATE_SIZE[str_i][0], SATE_SIZE[str_i][1]
@@ -378,7 +406,7 @@ def tile_expand(str_i, cur_tile_x, cur_tile_y, p_img_xy_scale, zoom_level, tile_
     return tile_iou_expand_list, tile_iou_expand_weight_list, tile_iou_expand_loc_lat_lon_list, tile_semi_iou_expand_list, tile_semi_iou_expand_weight_list, tile_semi_iou_expand_loc_lat_lon_list
 
 def process_per_image(drone_meta_data):
-    file_dir, str_i, drone_img, lat, lon, height, phi, sate_lt_lat, sate_lt_lon, sate_rb_lat, sate_rb_lon, sate_pix_h, sate_pix_w = drone_meta_data
+    file_dir, str_i, drone_img, lat, lon, height, phi, sate_lt_lat, sate_lt_lon, sate_rb_lat, sate_rb_lon, sate_pix_h, sate_pix_w, drone_metadata = drone_meta_data
 
     # debug = (drone_img == '01_0015.JPG')
     debug = False
@@ -409,6 +437,7 @@ def process_per_image(drone_meta_data):
         "drone_img": drone_img,
         "lat": lat,
         "lon": lon,
+        "drone_metadata": drone_metadata,
         "sate_img_dir": os.path.join(os.path.dirname(file_dir), 'satellite'),
         "pair_pos_sate_img_list": [],
         "pair_pos_sate_weight_list": [],
@@ -576,6 +605,7 @@ def process_visloc_data(root, save_root, split_type):
             for row in csvreader:
                 cur_lat = float(row[3])
                 cur_lon = float(row[4])
+                drone_metadata = build_visloc_drone_metadata_optional(row)
                 tmp_meta_data = (
                     file_dir,
                     str_i,
@@ -590,6 +620,7 @@ def process_visloc_data(root, save_root, split_type):
                     sate_meta_data[str_i]["RB_lon"],
                     sate_pix_h,
                     sate_pix_w,
+                    drone_metadata,
                 )
 
                 if split_type == 'cross-area':
@@ -668,15 +699,7 @@ def write_json(pickle_root, root, split_type):
                 "pair_pos_semipos_sate_img_list": pair_drone2sate['pair_pos_semipos_sate_img_list'],
                 "pair_pos_semipos_sate_weight_list": pair_drone2sate['pair_pos_semipos_sate_weight_list'],
                 "pair_pos_semipos_sate_loc_lat_lon_list": pair_drone2sate['pair_pos_semipos_sate_loc_lat_lon_list'],
-                "drone_metadata": {
-                    "height": None,
-                    "drone_roll": None,
-                    "drone_pitch": None,
-                    "drone_yaw": None,
-                    "cam_roll": None,
-                    "cam_pitch": None,
-                    "cam_yaw": None,
-                }
+                "drone_metadata": pair_drone2sate.get("drone_metadata", {})
             })
         save_path = os.path.join(root, f'{split_type}-drone2sate-{type}.json')
         with open(save_path, 'w', encoding='utf-8') as f:
