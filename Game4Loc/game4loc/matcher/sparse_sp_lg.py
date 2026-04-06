@@ -18,24 +18,54 @@ class SparseSpLgMatcher:
         self,
         device="cuda",
         logger=None,
-        phase1_min_inliers=10,
+        phase1_min_inliers=0,
         angle_score_inlier_offset=None,
         use_multi_scale=True,
         save_final_matches=False,
     ):
+        # Stable sparse defaults selected from the controlled VisLoc yaw-aligned tuning.
+        scales = (1.0, 0.8, 0.6, 1.2)
+        ransac_method = "RANSAC"
+        ransac_reproj_threshold = 20.0
+        ransac_confidence = 0.99
+        ransac_max_iter = 1000
+        sp_detection_threshold = 0.003
+        sp_max_num_keypoints = 2048
+        sp_nms_radius = 4
+        sp_remove_borders = 4
+        sp_max_edge = 1024
+        lg_filter_threshold = 0.0
+        max_matches_per_scale = 1024
+        max_total_matches = 4096
+        min_inliers = 15
+        min_inlier_ratio = 0.001
         self.device = device
         self.logger = logger
         self.project_root = os.path.abspath(join(os.path.dirname(__file__), "..", ".."))
 
+        ransac_zoo = {
+            "RANSAC": cv2.RANSAC,
+            "USAC_FAST": getattr(cv2, "USAC_FAST", cv2.RANSAC),
+            "USAC_MAGSAC": getattr(cv2, "USAC_MAGSAC", cv2.RANSAC),
+            "USAC_PROSAC": getattr(cv2, "USAC_PROSAC", cv2.RANSAC),
+            "USAC_DEFAULT": getattr(cv2, "USAC_DEFAULT", cv2.RANSAC),
+            "USAC_FM_8PTS": getattr(cv2, "USAC_FM_8PTS", cv2.RANSAC),
+            "USAC_ACCURATE": getattr(cv2, "USAC_ACCURATE", cv2.RANSAC),
+            "USAC_PARALLEL": getattr(cv2, "USAC_PARALLEL", cv2.RANSAC),
+        }
+        ransac_method_name = str(ransac_method).strip().upper()
+        if ransac_method_name not in ransac_zoo:
+            ransac_method_name = "RANSAC"
+
         sp_conf = {
-            "max_num_keypoints_val": 2048,  # Increased from 512 to get more keypoints
+            "max_num_keypoints_val": int(sp_max_num_keypoints),
             "legacy_sampling": False,
-            "nms_radius": 4,
-            "remove_borders": 4,
-            "detection_threshold": 0.005,
+            "nms_radius": int(sp_nms_radius),
+            "remove_borders": int(sp_remove_borders),
+            "detection_threshold": float(sp_detection_threshold),
         }
         lg_conf = {
-            "filter_threshold": 0.0,
+            "filter_threshold": float(lg_filter_threshold),
             "flash": False,
             "mp": False,
             "checkpointed": False,
@@ -76,19 +106,20 @@ class SparseSpLgMatcher:
             self._log(logging.ERROR, err_msg)
             raise RuntimeError(err_msg)
 
-        self.sparse_ransac_method = cv2.USAC_MAGSAC # 改为更先进的 USAC_MAGSAC
-        self.sparse_ransac_reproj_threshold = 20.0 # 放宽重投影误差阈值，允许微小的像素偏移
-        self.sparse_ransac_confidence = 0.99 # 提高置信度要求，让算法搜索更彻底
-        self.sparse_ransac_max_iter = 1000 # 大幅增加 RANSAC 迭代次数，防止过早退出
-        self.sparse_sp_max_edge = 1024  # Increased from 640 to extract features at higher res
-        self.sparse_scales = (1.0, 0.75, 0.5, 1.25)  # Added more scales
-        self.sparse_max_matches_per_scale = 1024  # Increased drastically to keep more matches
-        self.sparse_max_total_matches = 4096      # Increased drastically
+        self.sparse_ransac_method_name = ransac_method_name
+        self.sparse_ransac_method = ransac_zoo[ransac_method_name]
+        self.sparse_ransac_reproj_threshold = float(ransac_reproj_threshold)
+        self.sparse_ransac_confidence = float(ransac_confidence)
+        self.sparse_ransac_max_iter = int(ransac_max_iter)
+        self.sparse_sp_max_edge = int(sp_max_edge)
+        self.sparse_scales = tuple(float(v) for v in scales) if scales else (1.0,)
+        self.sparse_max_matches_per_scale = int(max_matches_per_scale)
+        self.sparse_max_total_matches = int(max_total_matches)
         self.sparse_phase1_min_inliers = max(0, int(phase1_min_inliers))
         self.sparse_angle_score_inlier_offset = None if angle_score_inlier_offset is None else float(angle_score_inlier_offset)
         self.sparse_use_multi_scale = bool(use_multi_scale)
-        self.sparse_min_inliers = 15 # 提高最低内点要求，如果二阶段抢救完还不到15个，就回退
-        self.sparse_min_inlier_ratio = 0.001
+        self.sparse_min_inliers = int(min_inliers)
+        self.sparse_min_inlier_ratio = float(min_inlier_ratio)
 
         self.sparse_vis_dir = join(self.project_root, "Log", "sparse_bad_matches")
         self.sparse_vis_enable = True
@@ -118,6 +149,7 @@ class SparseSpLgMatcher:
         }
         self.last_match_info = None
         self.last_angle_results = []
+        self.last_final_vis_path = None
 
     def _log(self, level, msg, *args):
         if self.logger is not None:
@@ -166,7 +198,7 @@ class SparseSpLgMatcher:
         case_name=None,
     ):
         if (not enabled) or (getattr(self, counter_attr) >= max_save):
-            return
+            return None
         try:
             img0 = image0[0].detach().cpu().permute(1, 2, 0).numpy()
             img1_src = image1_vis if image1_vis is not None else image1
@@ -219,8 +251,10 @@ class SparseSpLgMatcher:
             filename_parts.append(reason)
             out_path = join(out_dir, "_".join(filename_parts) + ".png")
             cv2.imwrite(out_path, canvas[..., ::-1])
+            return out_path
         except Exception as e:
             self._log(logging.DEBUG, "保存 sparse 可视化失败: %s", str(e))
+            return None
 
     def _build_case_slug(self, case_name):
         if case_name is None:
@@ -273,7 +307,7 @@ class SparseSpLgMatcher:
         }
 
     def _save_sparse_bad_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None, case_name=None):
-        self._save_sparse_case(
+        return self._save_sparse_case(
             image0=image0,
             image1=image1,
             mk0=mk0,
@@ -290,7 +324,7 @@ class SparseSpLgMatcher:
         )
 
     def _save_sparse_final_case(self, image0, image1, mk0, mk1, reason, inlier_mask=None, image1_vis=None, yaw_angle=None, case_name=None):
-        self._save_sparse_case(
+        return self._save_sparse_case(
             image0=image0,
             image1=image1,
             mk0=mk0,
@@ -586,6 +620,7 @@ class SparseSpLgMatcher:
 
     def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None):
         t_total = time.perf_counter()
+        self.last_final_vis_path = None
         rotate_step_p1 = self._normalize_rotate_step(rotate)
         if rotate_step_p1 <= 1e-6:
             yaw0 = None
@@ -647,6 +682,7 @@ class SparseSpLgMatcher:
                 "inliers": 0,
                 "rot_angle": 0.0,
                 "n_kept": 0,
+                "final_vis_path": None,
             }
             return np.eye(3)
             
@@ -672,7 +708,7 @@ class SparseSpLgMatcher:
         final_reason = f"final_phase{selected_phase}"
         if b_stats["n_kept"] < 4 or inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
             final_reason += "_fallback"
-        self._save_sparse_final_case(
+        self.last_final_vis_path = self._save_sparse_final_case(
             image0,
             image1,
             b_stats["mk0"],
@@ -716,6 +752,7 @@ class SparseSpLgMatcher:
             "inliers": int(inliers),
             "rot_angle": float(rot_angle),
             "n_kept": int(b_stats["n_kept"]),
+            "final_vis_path": self.last_final_vis_path,
         }
         return H
 

@@ -1,3 +1,5 @@
+import os
+import cv2
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -9,6 +11,52 @@ from sklearn.metrics import average_precision_score
 from geopy.distance import geodesic
 
 from ..matcher.gim_dkm import GimDKM
+
+
+def annotate_final_match_visualization(image_path, distance_m, logger=None):
+    if not image_path:
+        return
+    try:
+        distance_value = float(distance_m)
+    except (TypeError, ValueError):
+        return
+    if not np.isfinite(distance_value) or (not os.path.isfile(image_path)):
+        return
+
+    try:
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        if image is None:
+            return
+        text = f"Distance={distance_value:.2f}m"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.75
+        thickness = 2
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        pad = 10
+        rect_top = max(0, image.shape[0] - (text_h + baseline + pad * 2))
+        overlay = image.copy()
+        cv2.rectangle(
+            overlay,
+            (0, rect_top),
+            (min(image.shape[1] - 1, text_w + pad * 2), image.shape[0] - 1),
+            (0, 0, 0),
+            thickness=-1,
+        )
+        image = cv2.addWeighted(overlay, 0.45, image, 0.55, 0.0)
+        cv2.putText(
+            image,
+            text,
+            (pad, image.shape[0] - baseline - pad),
+            font,
+            font_scale,
+            (0, 255, 255),
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.imwrite(image_path, image)
+    except Exception as exc:
+        if logger is not None:
+            logger.debug("为最终匹配图写入 Distance 失败: %s", str(exc))
 
 
 def sdm(query_loc, sdmk_list, index, gallery_loc_xy_list, s=0.001):
@@ -165,7 +213,6 @@ def evaluate(
         with_match=False,
         match_mode='sparse',
         rotate=True,
-        sparse_phase1_min_inliers=10,
         sparse_angle_score_inlier_offset=None,
         sparse_use_multi_scale=True,
         sparse_save_final_vis=False,
@@ -178,8 +225,8 @@ def evaluate(
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
         logger.debug(
-            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_phase1_min_inliers=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s, angle_experiment=%s",
-            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_phase1_min_inliers, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_save_final_vis, angle_experiment,
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s, angle_experiment=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_save_final_vis, angle_experiment,
         )
     else:
         print("Extract Features and Compute Scores:")
@@ -213,7 +260,6 @@ def evaluate(
             device=config.device,
             match_mode=match_mode,
             logger=logger,
-            sparse_phase1_min_inliers=sparse_phase1_min_inliers,
             sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=sparse_use_multi_scale,
             sparse_save_final_vis=sparse_save_final_vis,
@@ -354,6 +400,12 @@ def evaluate(
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))
 
         dis_list.append(get_dis(query_center_loc_xy_list[i], index, gallery_center_loc_xy_list, disk_list, match_loc))
+        if with_match and isinstance(match_info, dict):
+            annotate_final_match_visualization(
+                match_info.get("final_vis_path"),
+                dis_list[i][0],
+                logger=logger,
+            )
         if logger is not None and angle_experiment and with_match and match_mode == "sparse":
             logger.info(
                 "[角度实验] Query=%s | Top1Gallery=%s | 原始Top1Dis=%.2fm | 最终Dis=%.2fm | 候选角度数=%d",

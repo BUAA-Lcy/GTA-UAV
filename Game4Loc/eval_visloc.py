@@ -82,7 +82,6 @@ class Configuration:
     match_mode: str = "sparse"
     rotate: float = 0.0
     use_yaw: bool = False
-    sparse_phase1_min_inliers: int = 30
     sparse_angle_score_inlier_offset: int = 25
     multi_scale: bool = True
     sparse_save_final_vis: bool = True
@@ -154,9 +153,9 @@ def eval_script(config):
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "启用 (如果数据提供)" if config.use_yaw else "关闭 (默认仅做旋转搜索)")
             if config.use_yaw:
                 logger.info("VisLoc yaw 默认约定: 使用 -Phi1 对齐正北卫星图 (即 Phi1>0 时查询航拍图顺时针旋转 Phi1°)")
-            logger.info("VisLoc 稀疏匹配一阶段触发二阶段阈值: %d", config.sparse_phase1_min_inliers)
             logger.info("VisLoc 稀疏最佳角度评分: score = ratio * max(inliers - %d, 0)", config.sparse_angle_score_inlier_offset)
             logger.info("VisLoc 稀疏多尺度匹配: %s", "开启" if config.multi_scale else "关闭")
+            logger.info("VisLoc 稀疏匹配使用内置稳定默认参数: phase2关闭, RANSAC=RANSAC, reproj=20, SP.det=0.003, SP.kpts=2048, SP.nms=4, scales=(1.0, 0.8, 0.6, 1.2)")
             logger.info(
                 "VisLoc 稀疏最终匹配可视化: %s (目录=%s, 最多=%d张)",
                 "开启" if config.sparse_save_final_vis else "关闭",
@@ -331,7 +330,6 @@ def eval_script(config):
             with_match=effective_with_match,
             match_mode=config.match_mode,
             rotate=config.rotate,
-            sparse_phase1_min_inliers=config.sparse_phase1_min_inliers,
             sparse_angle_score_inlier_offset=config.sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=config.multi_scale,
             sparse_save_final_vis=config.sparse_save_final_vis,
@@ -355,6 +353,7 @@ def parse_args():
     parser.add_argument("--checkpoint_start", type=str, default=None, help="Checkpoint path for evaluation")
     parser.add_argument("--gpu_ids", type=parse_tuple, default=(0,), help="GPU IDs, for example: 0 or 0,1")
     parser.add_argument("--batch_size", type=int, default=128, help="Evaluation batch size")
+    parser.add_argument("--num_workers", type=int, default=None, help="Dataloader workers (default: platform-specific config value)")
     parser.add_argument("--test_mode", type=str, default="pos", help="Test with pair in iou or oc")
     parser.add_argument("--query_mode", type=str, default="D2S", choices=("D2S", "S2D"), help="Retrieval direction")
     parser.add_argument("--no_share_weights", action="store_true", help="Evaluate without shared backbone weights")
@@ -389,6 +388,8 @@ if __name__ == "__main__":
     config.gpu_ids = args.gpu_ids
     config.batch_size = args.batch_size
     config.batch_size_eval = args.batch_size
+    if args.num_workers is not None:
+        config.num_workers = args.num_workers
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.share_weights = not args.no_share_weights

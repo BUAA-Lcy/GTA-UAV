@@ -327,7 +327,6 @@ class GimDKM:
             device='cuda',
             logger=None,
             match_mode='sparse',
-            sparse_phase1_min_inliers=10,
             sparse_angle_score_inlier_offset=None,
             sparse_use_multi_scale=True,
             sparse_save_final_vis=False,
@@ -357,7 +356,6 @@ class GimDKM:
             self.sparse_matcher = SparseSpLgMatcher(
                 device=device,
                 logger=logger,
-                phase1_min_inliers=sparse_phase1_min_inliers,
                 angle_score_inlier_offset=sparse_angle_score_inlier_offset,
                 use_multi_scale=sparse_use_multi_scale,
                 save_final_matches=sparse_save_final_vis,
