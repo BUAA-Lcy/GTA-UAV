@@ -77,6 +77,74 @@ class DesModel(nn.Module):
     def freeze_layers(self, frozen_blocks=10, frozen_stages=[0,0,0,0]):
         pass
 
+    @staticmethod
+    def _unwrap_features(features):
+        if isinstance(features, dict):
+            for key in ("x_norm_patchtokens", "x_prenorm", "x", "last_hidden_state", "features"):
+                value = features.get(key)
+                if isinstance(value, torch.Tensor):
+                    return value
+            for value in features.values():
+                if isinstance(value, torch.Tensor):
+                    return value
+            raise ValueError("No tensor features found in backbone output dict.")
+
+        if isinstance(features, (list, tuple)):
+            for value in reversed(features):
+                if isinstance(value, torch.Tensor):
+                    return value
+            raise ValueError("No tensor features found in backbone output list/tuple.")
+
+        if isinstance(features, torch.Tensor):
+            return features
+
+        raise TypeError(f"Unsupported backbone feature type: {type(features)!r}")
+
+    @staticmethod
+    def _tokens_to_feature_map(tokens):
+        if not isinstance(tokens, torch.Tensor):
+            raise TypeError(f"Expected tensor tokens, got {type(tokens)!r}")
+
+        if tokens.ndim == 4:
+            # Prefer channel-first feature maps.
+            if tokens.shape[1] <= 4 and tokens.shape[-1] > 4:
+                tokens = tokens.permute(0, 3, 1, 2).contiguous()
+            return tokens
+
+        if tokens.ndim != 3:
+            raise ValueError(f"Expected 3D/4D backbone features, got shape={tuple(tokens.shape)}")
+
+        bsz, n_tokens, dim = tokens.shape
+        side = int(round(np.sqrt(n_tokens)))
+        if side * side == n_tokens:
+            patch_tokens = tokens
+        elif n_tokens > 1:
+            side = int(round(np.sqrt(n_tokens - 1)))
+            if side * side != (n_tokens - 1):
+                raise ValueError(f"Cannot reshape tokens of shape={tuple(tokens.shape)} into a square grid.")
+            patch_tokens = tokens[:, 1:, :]
+        else:
+            raise ValueError(f"Cannot reshape tokens of shape={tuple(tokens.shape)} into a square grid.")
+
+        return patch_tokens.transpose(1, 2).reshape(bsz, dim, side, side).contiguous()
+
+    def _select_backbone(self, branch="img1"):
+        if self.share_weights:
+            return self.model
+        if branch == "img1":
+            return self.model1
+        if branch == "img2":
+            return self.model2
+        raise ValueError(f"Unknown branch: {branch}")
+
+    def extract_feature_map(self, img, branch="img1"):
+        backbone = self._select_backbone(branch=branch)
+        if not hasattr(backbone, "forward_features"):
+            raise AttributeError(f"Backbone {type(backbone)!r} does not provide forward_features().")
+        features = backbone.forward_features(img)
+        features = self._unwrap_features(features)
+        return self._tokens_to_feature_map(features)
+
     def forward(self, img1=None, img2=None):
 
         if self.share_weights:
@@ -164,5 +232,4 @@ if __name__ == '__main__':
     # print(model(x).shape)
     # flops, params = profile(dinov2_vitb14_reg, inputs=(x,))
     # print('flops(G)', flops/1e9, 'params(M)', params/1e6)
-
 

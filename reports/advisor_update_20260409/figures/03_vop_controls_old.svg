@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620" fill="none" role="img" aria-label="原始协议机制控制">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="1280" height="620" fill="#F8FAFC"/>
+<style>text{font-family:"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB","DejaVu Sans","Arial",sans-serif;}</style>
+<rect x="24" y="24" width="1232" height="572" rx="18.0" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+<text x="52" y="68" fill="#0F172A" font-size="28" font-weight="700" text-anchor="start">原始 03/04 协议：k=3 的机制控制</text>
+<text x="52" y="96" fill="#475569" font-size="15" font-weight="400" text-anchor="start">后验选择优于均匀/随机选择，而理想上界说明方向预测仍有提升空间。</text>
+<line x1="250" y1="535" x2="670" y2="535" stroke="#94A3B8" stroke-width="1.4"/>
+<line x1="250.0" y1="529" x2="250.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="250.0" y1="315" x2="250.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="250.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">0</text>
+<line x1="379.2307692307692" y1="529" x2="379.2307692307692" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="379.2307692307692" y1="315" x2="379.2307692307692" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="379.2307692307692" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">20</text>
+<line x1="508.46153846153845" y1="529" x2="508.46153846153845" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="508.46153846153845" y1="315" x2="508.46153846153845" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="508.46153846153845" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">40</text>
+<line x1="637.6923076923076" y1="529" x2="637.6923076923076" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="637.6923076923076" y1="315" x2="637.6923076923076" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="637.6923076923076" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">60</text>
+<text x="670" y="585" fill="#475569" font-size="13" font-weight="400" text-anchor="end">Dis@1（米）</text>
+<line x1="770" y1="535" x2="1190" y2="535" stroke="#94A3B8" stroke-width="1.4"/>
+<line x1="770.0" y1="529" x2="770.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="770.0" y1="315" x2="770.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="770.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">0</text>
+<line x1="875.0" y1="529" x2="875.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="875.0" y1="315" x2="875.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="875.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">25</text>
+<line x1="980.0" y1="529" x2="980.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="980.0" y1="315" x2="980.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="980.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">50</text>
+<line x1="1085.0" y1="529" x2="1085.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="1085.0" y1="315" x2="1085.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="1085.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">75</text>
+<line x1="1190.0" y1="529" x2="1190.0" y2="541" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="1190.0" y1="315" x2="1190.0" y2="535" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="1190.0" y="559" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">100</text>
+<text x="1190" y="585" fill="#475569" font-size="13" font-weight="400" text-anchor="end">最优角覆盖率（%）</text>
+<text x="220" y="188" fill="#0F172A" font-size="18" font-weight="600" text-anchor="end">后验选择 k=3</text>
+<rect x="250" y="170" width="319.4778900256606" height="24" rx="8.0" fill="#7C3AED"/>
+<text x="579.4778900256606" y="188" fill="#7C3AED" font-size="14" font-weight="600" text-anchor="start">49.4</text>
+<rect x="770" y="170" width="68.79310344827587" height="24" rx="8.0" fill="#7C3AED"/>
+<text x="848.7931034482758" y="188" fill="#7C3AED" font-size="14" font-weight="600" text-anchor="start">16.4%</text>
+<text x="220" y="212" fill="#475569" font-size="12" font-weight="400" text-anchor="end">耗时=0.313s</text>
+<text x="220" y="272" fill="#0F172A" font-size="18" font-weight="600" text-anchor="end">均匀选择 k=3</text>
+<rect x="250" y="254" width="373.95309663791676" height="24" rx="8.0" fill="#CA8A04"/>
+<text x="633.9530966379168" y="272" fill="#CA8A04" font-size="14" font-weight="600" text-anchor="start">57.9</text>
+<rect x="770" y="254" width="57.93103448275861" height="24" rx="8.0" fill="#CA8A04"/>
+<text x="837.9310344827586" y="272" fill="#CA8A04" font-size="14" font-weight="600" text-anchor="start">13.8%</text>
+<text x="220" y="296" fill="#475569" font-size="12" font-weight="400" text-anchor="end">耗时=0.282s</text>
+<text x="220" y="356" fill="#0F172A" font-size="18" font-weight="600" text-anchor="end">随机选择 k=3</text>
+<rect x="250" y="338" width="454.41433171649766" height="24" rx="8.0" fill="#DC2626"/>
+<text x="714.4143317164976" y="356" fill="#DC2626" font-size="14" font-weight="600" text-anchor="start">70.3</text>
+<rect x="770" y="338" width="28.965517241379306" height="24" rx="8.0" fill="#DC2626"/>
+<text x="808.9655172413793" y="356" fill="#DC2626" font-size="14" font-weight="600" text-anchor="start">6.9%</text>
+<text x="220" y="380" fill="#475569" font-size="12" font-weight="400" text-anchor="end">耗时=0.276s</text>
+<text x="220" y="440" fill="#0F172A" font-size="18" font-weight="600" text-anchor="end">理想上界 k=3</text>
+<rect x="250" y="422" width="281.9637068887548" height="24" rx="8.0" fill="#16A34A"/>
+<text x="541.9637068887548" y="440" fill="#16A34A" font-size="14" font-weight="600" text-anchor="start">43.6</text>
+<rect x="770" y="422" width="420.0" height="24" rx="8.0" fill="#16A34A"/>
+<text x="1200.0" y="440" fill="#16A34A" font-size="14" font-weight="600" text-anchor="start">100.0%</text>
+<text x="220" y="464" fill="#475569" font-size="12" font-weight="400" text-anchor="end">耗时=0.258s</text>
+<text x="52" y="578" fill="#475569" font-size="14" font-weight="400" text-anchor="start">这是最直接的证据：在原始小范围设定下，VOP 学到的不是随机方向信号。</text>
+</svg>

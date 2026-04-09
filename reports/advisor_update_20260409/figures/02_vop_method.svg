@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620" fill="none" role="img" aria-label="什么是 VOP">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="1400" height="620" fill="#F8FAFC"/>
+<style>text{font-family:"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB","DejaVu Sans","Arial",sans-serif;}</style>
+<rect x="20" y="20" width="1360" height="580" rx="18.0" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+<text x="48" y="62" fill="#0F172A" font-size="28" font-weight="700" text-anchor="start">VOP 的训练与使用方式</text>
+<text x="48" y="90" fill="#475569" font-size="15" font-weight="400" text-anchor="start">训练阶段生成角度教师分布；推理阶段只保留少量高概率角度进入匹配器。</text>
+<text x="60" y="150" fill="#2563EB" font-size="24" font-weight="700" text-anchor="start">训练阶段</text>
+<text x="60" y="370" fill="#EA580C" font-size="24" font-weight="700" text-anchor="start">推理阶段</text>
+<rect x="60" y="170" width="170" height="82" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+<text x="145.0" y="202" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">top-1 检索到的</text>
+<text x="145.0" y="222" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">卫星图像</text>
+<rect x="280" y="170" width="170" height="82" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+<text x="365.0" y="202" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">无人机查询</text>
+<text x="365.0" y="222" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">图像</text>
+<rect x="500" y="170" width="200" height="82" rx="16" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1.2"/>
+<text x="600.0" y="202" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">将查询图旋转为</text>
+<text x="600.0" y="222" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">36 个角度（步长 10°）</text>
+<rect x="750" y="170" width="250" height="82" rx="16" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1.2"/>
+<text x="875.0" y="202" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">统计每个角度下的</text>
+<text x="875.0" y="222" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">最终定位误差</text>
+<rect x="1050" y="170" width="260" height="82" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.2"/>
+<text x="1180.0" y="202" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">把角度-误差曲线</text>
+<text x="1180.0" y="222" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">转成软教师分布</text>
+<rect x="60" y="390" width="170" height="82" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+<text x="145.0" y="422" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">top-1 检索到的</text>
+<text x="145.0" y="442" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">卫星图像</text>
+<rect x="280" y="390" width="170" height="82" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+<text x="365.0" y="422" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">无人机查询</text>
+<text x="365.0" y="442" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">图像</text>
+<rect x="500" y="390" width="200" height="82" rx="16" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.2"/>
+<text x="600.0" y="422" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">来自检索骨干的</text>
+<text x="600.0" y="442" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">特征图</text>
+<rect x="750" y="390" width="250" height="82" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.2"/>
+<text x="875.0" y="422" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">VOP 预测候选角度上的</text>
+<text x="875.0" y="442" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">后验分布</text>
+<rect x="1050" y="390" width="260" height="82" rx="16" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.2"/>
+<text x="1180.0" y="422" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">保留 top-k 个角度，</text>
+<text x="1180.0" y="442" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">只在其上运行匹配器</text>
+<line x1="230" y1="211" x2="280" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="450" y1="211" x2="500" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="700" y1="211" x2="750" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1000" y1="211" x2="1050" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="230" y1="431" x2="280" y2="431" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="450" y1="431" x2="500" y2="431" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="700" y1="431" x2="750" y2="431" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1000" y1="431" x2="1050" y2="431" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1050" y="285" fill="#475569" font-size="16" font-weight="400" text-anchor="start">教师目标是软分布，不是独热标签</text>
+<text x="1050" y="500" fill="#475569" font-size="16" font-weight="400" text-anchor="start">这里用方向打分替代
+穷举式旋转搜索</text>
+<text x="60" y="548" fill="#475569" font-size="15" font-weight="400" text-anchor="start">VOP 的作用：显式建模方向不确定性，并直接复用现有检索骨干作为特征编码器。</text>
+</svg>

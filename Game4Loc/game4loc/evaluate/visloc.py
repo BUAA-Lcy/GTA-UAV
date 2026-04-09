@@ -1,3 +1,4 @@
+import json
 import os
 import cv2
 import torch
@@ -7,10 +8,18 @@ import gc
 import time
 from torch.cuda.amp import autocast
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+from torchvision.transforms import InterpolationMode
 from sklearn.metrics import average_precision_score
 from geopy.distance import geodesic
 
 from ..matcher.gim_dkm import GimDKM
+from ..orientation import load_vop_checkpoint, normalize_angle_deg, select_angle_result_with_vop
+from ..verification import (
+    build_confidence_candidate_record,
+    load_confidence_verifier,
+    select_candidate_with_confidence,
+)
 
 
 def annotate_final_match_visualization(image_path, distance_m, logger=None):
@@ -151,6 +160,71 @@ def get_top10(index, gallery_list):
     return top10
 
 
+def _build_unique_candidate_angles(angle_results):
+    candidate_angles = []
+    seen = set()
+    for angle_result in angle_results:
+        if str(angle_result.get("status", "")) != "ok":
+            continue
+        if angle_result.get("homography") is None:
+            continue
+        angle = round(normalize_angle_deg(float(angle_result.get("rot_angle", 0.0))), 6)
+        if angle in seen:
+            continue
+        seen.add(angle)
+        candidate_angles.append(float(angle))
+    return candidate_angles
+
+
+def _rotate_query_tensor(query_tensor, angle_deg):
+    if abs(float(angle_deg)) < 1e-6:
+        return query_tensor
+    fill_value = -1.0
+    if query_tensor.ndim == 3:
+        return TF.rotate(
+            query_tensor,
+            angle=float(angle_deg),
+            interpolation=InterpolationMode.BILINEAR,
+            expand=False,
+            fill=[fill_value] * int(query_tensor.shape[0]),
+        )
+    if query_tensor.ndim == 4:
+        rotated = [
+            TF.rotate(
+                sample,
+                angle=float(angle_deg),
+                interpolation=InterpolationMode.BILINEAR,
+                expand=False,
+                fill=[fill_value] * int(sample.shape[0]),
+            )
+            for sample in query_tensor
+        ]
+        return torch.stack(rotated, dim=0)
+    raise ValueError(f"Unsupported query tensor shape for rotation: {tuple(query_tensor.shape)}")
+
+
+def _prefer_match_candidate(inliers, inlier_ratio, best_inliers, best_ratio):
+    if inliers > best_inliers:
+        return True
+    if inliers == best_inliers and inlier_ratio > best_ratio:
+        return True
+    return False
+
+
+def _to_jsonable_candidate_record(record):
+    output = {}
+    for key, value in record.items():
+        if key in {"match_info", "candidate_loc_lat_lon"}:
+            continue
+        if isinstance(value, (np.floating, np.integer)):
+            output[key] = value.item()
+        elif isinstance(value, tuple):
+            output[key] = list(value)
+        else:
+            output[key] = value
+    return output
+
+
 def predict(train_config, model, dataloader):
     
     model.eval()
@@ -217,10 +291,18 @@ def evaluate(
         sparse_use_multi_scale=True,
         sparse_save_final_vis=False,
         angle_experiment=False,
+        orientation_checkpoint="",
+        orientation_mode="off",
+        orientation_fusion_weight=0.5,
+        orientation_topk=1,
+        confidence_checkpoint="",
+        confidence_threshold=0.5,
+        confidence_dump_path="",
         wandb_run=None,
         epoch=None,
         logger=None,
     ):
+    ma_thresholds_m = (3.0, 5.0, 10.0, 20.0)
     t_total = time.perf_counter()
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
@@ -264,6 +346,33 @@ def evaluate(
             sparse_use_multi_scale=sparse_use_multi_scale,
             sparse_save_final_vis=sparse_save_final_vis,
         )
+    orientation_mode_key = str(orientation_mode).lower()
+    orientation_model = None
+    use_orientation_model = bool(
+        with_match
+        and match_mode == "sparse"
+        and orientation_mode_key != "off"
+        and str(orientation_checkpoint).strip()
+    )
+    if use_orientation_model:
+        orientation_model = load_vop_checkpoint(orientation_checkpoint, device=config.device)
+        if logger is not None:
+            logger.info("VOP 已加载: %s", orientation_checkpoint)
+    elif with_match and match_mode == "sparse" and orientation_mode_key != "off" and logger is not None:
+        logger.warning("VOP 已请求但未提供有效 checkpoint，自动退回 geometry-only 选角。")
+    confidence_verifier = None
+    use_confidence_verifier = bool(
+        with_match
+        and match_mode == "sparse"
+        and orientation_mode_key == "prior_topk"
+        and str(confidence_checkpoint).strip()
+    )
+    if use_confidence_verifier:
+        confidence_verifier = load_confidence_verifier(confidence_checkpoint)
+        if logger is not None:
+            logger.info("Confidence verifier 已加载: %s", confidence_checkpoint)
+    elif str(confidence_checkpoint).strip() and logger is not None:
+        logger.warning("Confidence verifier 已提供，但当前模式不是 prior_topk，自动忽略。")
 
     ap = 0.0
 
@@ -343,6 +452,42 @@ def evaluate(
     loc1_list = []
     dis_ori_list = []
     dis_match_list = []
+    orientation_stats = {
+        "count": 0,
+        "entropy_sum": 0.0,
+        "concentration_sum": 0.0,
+        "top_prob_sum": 0.0,
+        "time_sum": 0.0,
+        "match_time_sum": 0.0,
+        "hypothesis_sum": 0,
+        "override_count": 0,
+        "improve_count": 0,
+        "worse_count": 0,
+    }
+    confidence_stats = {
+        "count": 0,
+        "time_sum": 0.0,
+        "accept_count": 0,
+        "reject_count": 0,
+        "override_count": 0,
+        "selected_rank_sum": 0.0,
+        "selected_score_sum": 0.0,
+    }
+    fineloc_stats = {
+        "final_error_list": [],
+        "coarse_error_list": [],
+        "ma_hits": {float(thresh): 0 for thresh in ma_thresholds_m},
+        "worse_than_coarse": 0,
+        "fallback_count": 0,
+        "identity_h_fallback_count": 0,
+        "out_of_bounds_count": 0,
+        "projection_invalid_count": 0,
+        "retained_matches": [],
+        "inliers": [],
+        "inlier_ratios": [],
+        "hypotheses_evaluated": [],
+    }
+    confidence_dump_records = [] if str(confidence_dump_path).strip() else None
 
     t_metrics = time.perf_counter()
     progress_interval = max(1, query_num // 10)
@@ -359,8 +504,10 @@ def evaluate(
         match_loc = None
         match_info = None
         angle_results = []
+        orientation_posterior = None
         sparse_yaw0 = None
         sparse_yaw1 = None
+        hypotheses_evaluated = 0
         if with_match:
             gallery_sample = gallery_loader.dataset[top1_index]
             query_sample = query_loader.dataset[i]
@@ -373,25 +520,235 @@ def evaluate(
             gallery_center_lon_lat = gallery_center_lon, gallery_center_lat
             gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
             gallery_topleft_lon_lat = gallery_topleft_lon, gallery_topleft_lat
-            match_loc_lon_lat = matcher.est_center(
-                gallery_sample,
-                query_sample,
-                gallery_center_lon_lat,
-                gallery_topleft_lon_lat,
-                yaw0=sparse_yaw0,
-                yaw1=sparse_yaw1,
-                rotate=rotate,
-                case_name=query_list[i],
-            )
-            if hasattr(matcher, "get_last_match_info"):
-                match_info = matcher.get_last_match_info()
+            if use_orientation_model and orientation_mode_key == "prior_single":
+                candidate_angles = getattr(orientation_model, "candidate_angles_deg", None) or [0.0]
+                t_orientation = time.perf_counter()
+                orientation_posterior = orientation_model.predict_posterior(
+                    retrieval_model=model,
+                    gallery_img=gallery_sample,
+                    query_img=query_sample,
+                    candidate_angles_deg=candidate_angles,
+                    device=config.device,
+                    gallery_branch="img2",
+                    query_branch="img1",
+                )
+                orientation_stats["time_sum"] += time.perf_counter() - t_orientation
+                rotated_query_sample = _rotate_query_tensor(query_sample, orientation_posterior["top_angle_deg"])
+                t_match = time.perf_counter()
+                match_loc_lon_lat = matcher.est_center(
+                    gallery_sample,
+                    rotated_query_sample,
+                    gallery_center_lon_lat,
+                    gallery_topleft_lon_lat,
+                    yaw0=None,
+                    yaw1=None,
+                    rotate=0.0,
+                    case_name=f"{query_list[i]}_vop_prior_single",
+                )
+                orientation_stats["match_time_sum"] += time.perf_counter() - t_match
+                orientation_stats["hypothesis_sum"] += 1
+                hypotheses_evaluated = 1
+                orientation_stats["count"] += 1
+                orientation_stats["entropy_sum"] += float(orientation_posterior["entropy"])
+                orientation_stats["concentration_sum"] += float(orientation_posterior["concentration"])
+                orientation_stats["top_prob_sum"] += float(orientation_posterior["top_prob"])
+            elif use_orientation_model and orientation_mode_key == "prior_topk":
+                candidate_angles = getattr(orientation_model, "candidate_angles_deg", None) or [0.0]
+                topk = max(1, min(int(orientation_topk), len(candidate_angles)))
+                t_orientation = time.perf_counter()
+                orientation_posterior = orientation_model.predict_posterior(
+                    retrieval_model=model,
+                    gallery_img=gallery_sample,
+                    query_img=query_sample,
+                    candidate_angles_deg=candidate_angles,
+                    device=config.device,
+                    gallery_branch="img2",
+                    query_branch="img1",
+                )
+                orientation_stats["time_sum"] += time.perf_counter() - t_orientation
+                sorted_indices = list(np.argsort(np.asarray(orientation_posterior["probs"], dtype=np.float64))[::-1][:topk])
+                best_match_loc_lon_lat = None
+                best_match_info = None
+                best_match_record = None
+                best_match_inliers = -1
+                best_match_ratio = -1.0
+                total_topk_match_time = 0.0
+                coarse_error_m = float(get_dis_target(query_center_loc_xy_list[i], gallery_center_loc_xy_list[top1_index]))
+                candidate_records = []
+                for rank_j, cand_index in enumerate(sorted_indices):
+                    cand_angle = float(candidate_angles[int(cand_index)])
+                    cand_prob = float(orientation_posterior["probs"][int(cand_index)])
+                    rotated_query_sample = _rotate_query_tensor(query_sample, cand_angle)
+                    t_match = time.perf_counter()
+                    candidate_loc_lon_lat = matcher.est_center(
+                        gallery_sample,
+                        rotated_query_sample,
+                        gallery_center_lon_lat,
+                        gallery_topleft_lon_lat,
+                        yaw0=None,
+                        yaw1=None,
+                        rotate=0.0,
+                        case_name=f"{query_list[i]}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                    )
+                    total_topk_match_time += time.perf_counter() - t_match
+                    candidate_match_info = matcher.get_last_match_info() or {}
+                    cand_kept = int(candidate_match_info.get("n_kept", 0))
+                    cand_inliers = int(candidate_match_info.get("inliers", 0))
+                    cand_ratio = float(cand_inliers) / float(max(cand_kept, 1))
+                    candidate_loc_lat_lon = None
+                    candidate_error_m = None
+                    if candidate_loc_lon_lat is not None:
+                        candidate_loc_lat_lon = (candidate_loc_lon_lat[1], candidate_loc_lon_lat[0])
+                        candidate_error_m = float(geodesic(query_center_loc_xy_list[i], candidate_loc_lat_lon).meters)
+                    candidate_record = build_confidence_candidate_record(
+                        candidate_rank=rank_j,
+                        candidate_angle_deg=cand_angle,
+                        candidate_prob=cand_prob,
+                        top_prob=float(orientation_posterior["top_prob"]),
+                        entropy=float(orientation_posterior["entropy"]),
+                        concentration=float(orientation_posterior["concentration"]),
+                        match_info=candidate_match_info,
+                        coarse_error_m=coarse_error_m,
+                        candidate_error_m=candidate_error_m,
+                        score_offset=sparse_angle_score_inlier_offset,
+                    )
+                    candidate_record["candidate_loc_lat_lon"] = candidate_loc_lat_lon
+                    candidate_record["match_info"] = dict(candidate_match_info)
+                    candidate_records.append(candidate_record)
+                    if _prefer_match_candidate(cand_inliers, cand_ratio, best_match_inliers, best_match_ratio):
+                        best_match_loc_lon_lat = candidate_loc_lon_lat
+                        best_match_info = dict(candidate_match_info)
+                        best_match_record = dict(candidate_record)
+                        best_match_inliers = cand_inliers
+                        best_match_ratio = cand_ratio
+                match_loc_lon_lat = best_match_loc_lon_lat
+                match_info = best_match_info
+                if use_confidence_verifier and len(candidate_records) > 0:
+                    t_conf = time.perf_counter()
+                    selected_conf_record = select_candidate_with_confidence(candidate_records, confidence_verifier)
+                    confidence_stats["time_sum"] += time.perf_counter() - t_conf
+                    confidence_stats["count"] += 1
+                    if selected_conf_record is not None:
+                        confidence_score = float(selected_conf_record.get("confidence_score", 0.0))
+                        confidence_stats["selected_score_sum"] += confidence_score
+                        confidence_stats["selected_rank_sum"] += float(int(selected_conf_record.get("candidate_rank", 0)) + 1)
+                        if best_match_record is not None and int(selected_conf_record.get("candidate_rank", -1)) != int(best_match_record.get("candidate_rank", -1)):
+                            confidence_stats["override_count"] += 1
+                        if bool(selected_conf_record.get("confidence_accept", False)) and selected_conf_record.get("candidate_loc_lat_lon") is not None:
+                            confidence_stats["accept_count"] += 1
+                            selected_loc_lat_lon = tuple(selected_conf_record["candidate_loc_lat_lon"])
+                            match_loc_lon_lat = (selected_loc_lat_lon[1], selected_loc_lat_lon[0])
+                            match_info = dict(selected_conf_record.get("match_info", {}))
+                        else:
+                            confidence_stats["reject_count"] += 1
+                            coarse_lat_lon = tuple(gallery_center_loc_xy_list[top1_index])
+                            match_loc_lon_lat = (coarse_lat_lon[1], coarse_lat_lon[0])
+                            match_info = dict(best_match_info) if isinstance(best_match_info, dict) else {}
+                            match_info["fallback_to_center"] = True
+                            match_info["fallback_reason"] = "confidence_reject"
+                            match_info["confidence_reject"] = True
+                        if isinstance(match_info, dict):
+                            match_info = dict(match_info)
+                            match_info["confidence_score"] = confidence_score
+                            match_info["confidence_accept"] = bool(selected_conf_record.get("confidence_accept", False))
+                            match_info["confidence_rank"] = int(selected_conf_record.get("candidate_rank", 0)) + 1
+                            match_info["confidence_candidate_prob"] = float(selected_conf_record.get("candidate_prob", 0.0))
+                            match_info["confidence_geometry_score"] = float(selected_conf_record.get("geometry_score", 0.0))
+                if confidence_dump_records is not None:
+                    confidence_dump_records.append(
+                        {
+                            "query_name": query_list[i],
+                            "top1_gallery_name": gallery_list[top1_index],
+                            "coarse_error_m": coarse_error_m,
+                            "geometry_selected_rank": None if best_match_record is None else int(best_match_record.get("candidate_rank", 0)) + 1,
+                            "geometry_selected_error_m": None if best_match_record is None else best_match_record.get("candidate_error_m"),
+                            "candidates": [_to_jsonable_candidate_record(record) for record in candidate_records],
+                        }
+                    )
+                orientation_stats["match_time_sum"] += total_topk_match_time
+                orientation_stats["hypothesis_sum"] += topk
+                hypotheses_evaluated = topk
+                orientation_stats["count"] += 1
+                orientation_stats["entropy_sum"] += float(orientation_posterior["entropy"])
+                orientation_stats["concentration_sum"] += float(orientation_posterior["concentration"])
+                orientation_stats["top_prob_sum"] += float(orientation_posterior["top_prob"])
             else:
-                match_info = getattr(matcher, "last_match_info", None)
+                t_match = time.perf_counter()
+                match_loc_lon_lat = matcher.est_center(
+                    gallery_sample,
+                    query_sample,
+                    gallery_center_lon_lat,
+                    gallery_topleft_lon_lat,
+                    yaw0=sparse_yaw0,
+                    yaw1=sparse_yaw1,
+                    rotate=rotate,
+                    case_name=query_list[i],
+                )
+                orientation_stats["match_time_sum"] += time.perf_counter() - t_match
+            if match_info is None:
+                if hasattr(matcher, "get_last_match_info"):
+                    match_info = matcher.get_last_match_info()
+                else:
+                    match_info = getattr(matcher, "last_match_info", None)
             if hasattr(matcher, "get_last_angle_results"):
                 angle_results = matcher.get_last_angle_results()
-            match_loc_lat_lon = match_loc_lon_lat[1], match_loc_lon_lat[0]
-            dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc_lat_lon))
+            if hypotheses_evaluated <= 0:
+                hypotheses_evaluated = max(
+                    1,
+                    sum(1 for angle_result in angle_results if str(angle_result.get("status", "")) == "ok"),
+                )
+            match_loc_lat_lon = (match_loc_lon_lat[1], match_loc_lon_lat[0])
             match_loc = match_loc_lat_lon
+
+            if use_orientation_model and orientation_mode_key not in {"off", "prior_single", "prior_topk"} and len(angle_results) > 0:
+                candidate_angles = _build_unique_candidate_angles(angle_results)
+                if candidate_angles:
+                    t_orientation = time.perf_counter()
+                    orientation_posterior = orientation_model.predict_posterior(
+                        retrieval_model=model,
+                        gallery_img=gallery_sample,
+                        query_img=query_sample,
+                        candidate_angles_deg=candidate_angles,
+                        device=config.device,
+                        gallery_branch="img2",
+                        query_branch="img1",
+                    )
+                    orientation_stats["time_sum"] += time.perf_counter() - t_orientation
+                    selected_angle_result = select_angle_result_with_vop(
+                        angle_results,
+                        posterior=orientation_posterior,
+                        mode=str(orientation_mode).lower(),
+                        fusion_weight=orientation_fusion_weight,
+                    )
+                    orientation_stats["count"] += 1
+                    orientation_stats["entropy_sum"] += float(orientation_posterior["entropy"])
+                    orientation_stats["concentration_sum"] += float(orientation_posterior["concentration"])
+                    orientation_stats["top_prob_sum"] += float(orientation_posterior["top_prob"])
+                    if selected_angle_result is not None:
+                        selected_loc_lon_lat = project_match_center_from_h(
+                            selected_angle_result.get("homography"),
+                            gallery_sample,
+                            gallery_center_lon_lat,
+                            gallery_topleft_lon_lat,
+                        )
+                        if selected_loc_lon_lat is not None:
+                            selected_loc_lat_lon = (selected_loc_lon_lat[1], selected_loc_lon_lat[0])
+                            baseline_distance = geodesic(query_center_loc_xy_list[i], match_loc_lat_lon).meters
+                            selected_distance = geodesic(query_center_loc_xy_list[i], selected_loc_lat_lon).meters
+                            if (
+                                abs(float(selected_loc_lat_lon[0]) - float(match_loc_lat_lon[0])) > 1e-9
+                                or abs(float(selected_loc_lat_lon[1]) - float(match_loc_lat_lon[1])) > 1e-9
+                            ):
+                                orientation_stats["override_count"] += 1
+                            if selected_distance + 1e-6 < baseline_distance:
+                                orientation_stats["improve_count"] += 1
+                            elif selected_distance > baseline_distance + 1e-6:
+                                orientation_stats["worse_count"] += 1
+                            match_loc = selected_loc_lat_lon
+                            if isinstance(match_info, dict):
+                                match_info = dict(match_info)
+                                match_info["final_vis_path"] = None
+            dis_match_list.append(get_dis_target(query_center_loc_xy_list[i], match_loc))
         else:
             dis_match_list.append(None)
         
@@ -400,6 +757,36 @@ def evaluate(
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))
 
         dis_list.append(get_dis(query_center_loc_xy_list[i], index, gallery_center_loc_xy_list, disk_list, match_loc))
+        if with_match:
+            final_error_m = float(dis_list[i][0])
+            coarse_error_m = float(dis_ori_list[i])
+            fineloc_stats["final_error_list"].append(final_error_m)
+            fineloc_stats["coarse_error_list"].append(coarse_error_m)
+            for thresh in ma_thresholds_m:
+                if final_error_m <= float(thresh):
+                    fineloc_stats["ma_hits"][float(thresh)] += 1
+            if final_error_m > coarse_error_m + 1e-6:
+                fineloc_stats["worse_than_coarse"] += 1
+            fineloc_stats["hypotheses_evaluated"].append(float(hypotheses_evaluated))
+            if isinstance(match_info, dict):
+                retained_matches = float(match_info.get("n_kept", 0))
+                inliers = float(match_info.get("inliers", 0))
+                inlier_ratio = float(match_info.get("inlier_ratio", 0.0))
+                if retained_matches <= 0 and inliers > 0:
+                    retained_matches = inliers
+                if retained_matches > 0 and inlier_ratio <= 0:
+                    inlier_ratio = float(inliers) / float(max(retained_matches, 1.0))
+                fineloc_stats["retained_matches"].append(retained_matches)
+                fineloc_stats["inliers"].append(inliers)
+                fineloc_stats["inlier_ratios"].append(inlier_ratio)
+                if bool(match_info.get("fallback_to_center", False)):
+                    fineloc_stats["fallback_count"] += 1
+                if bool(match_info.get("identity_h_fallback", False)):
+                    fineloc_stats["identity_h_fallback_count"] += 1
+                if bool(match_info.get("out_of_bounds", False)):
+                    fineloc_stats["out_of_bounds_count"] += 1
+                if bool(match_info.get("projection_invalid", False)):
+                    fineloc_stats["projection_invalid_count"] += 1
         if with_match and isinstance(match_info, dict):
             annotate_final_match_visualization(
                 match_info.get("final_vis_path"),
@@ -415,6 +802,15 @@ def evaluate(
                 float(dis_list[i][0]),
                 len(angle_results),
             )
+            if orientation_posterior is not None:
+                logger.info(
+                    "[VOP] Query=%s | top_angle=%.1f° | top_prob=%.4f | entropy=%.4f | concentration=%.4f",
+                    query_list[i],
+                    float(orientation_posterior["top_angle_deg"]),
+                    float(orientation_posterior["top_prob"]),
+                    float(orientation_posterior["entropy"]),
+                    float(orientation_posterior["concentration"]),
+                )
             gallery_center_lat, gallery_center_lon = gallery_center_loc_xy_list[top1_index]
             gallery_center_lon_lat = gallery_center_lon, gallery_center_lat
             gallery_topleft_lat, gallery_topleft_lon = gallery_topleft_loc_xy_list[top1_index]
@@ -513,6 +909,36 @@ def evaluate(
         string.append('SDM@{}: {:.4f}'.format(sdmk_list[i], sdm_list[i]))
     for i in range(len(disk_list)):
         string.append('Dis@{}: {:.4f}'.format(disk_list[i], dis_list[i]))
+    if with_match:
+        final_error_arr = np.asarray(fineloc_stats["final_error_list"], dtype=np.float64)
+        coarse_error_arr = np.asarray(fineloc_stats["coarse_error_list"], dtype=np.float64)
+        retained_arr = np.asarray(fineloc_stats["retained_matches"], dtype=np.float64)
+        inliers_arr = np.asarray(fineloc_stats["inliers"], dtype=np.float64)
+        inlier_ratio_arr = np.asarray(fineloc_stats["inlier_ratios"], dtype=np.float64)
+        hypotheses_arr = np.asarray(fineloc_stats["hypotheses_evaluated"], dtype=np.float64)
+        query_count_for_stats = max(int(query_num), 1)
+        ma_metrics = {
+            int(thresh): float(fineloc_stats["ma_hits"][float(thresh)]) / float(query_count_for_stats) * 100.0
+            for thresh in ma_thresholds_m
+        }
+        fallback_ratio = float(fineloc_stats["fallback_count"]) / float(query_count_for_stats) * 100.0
+        worse_ratio = float(fineloc_stats["worse_than_coarse"]) / float(query_count_for_stats) * 100.0
+        mean_retained = float(np.mean(retained_arr)) if retained_arr.size > 0 else 0.0
+        mean_inliers = float(np.mean(inliers_arr)) if inliers_arr.size > 0 else 0.0
+        mean_inlier_ratio = float(np.mean(inlier_ratio_arr)) if inlier_ratio_arr.size > 0 else 0.0
+        mean_hypotheses = float(np.mean(hypotheses_arr)) if hypotheses_arr.size > 0 else 0.0
+        mean_vop_time = float(orientation_stats["time_sum"]) / float(query_count_for_stats)
+        mean_match_time = float(orientation_stats["match_time_sum"]) / float(query_count_for_stats)
+        mean_confidence_time = float(confidence_stats["time_sum"]) / float(query_count_for_stats)
+        mean_total_fineloc_time = mean_vop_time + mean_match_time + mean_confidence_time
+        string.extend(
+            [
+                'MA@3m: {:.2f}'.format(ma_metrics[3]),
+                'MA@5m: {:.2f}'.format(ma_metrics[5]),
+                'MA@10m: {:.2f}'.format(ma_metrics[10]),
+                'MA@20m: {:.2f}'.format(ma_metrics[20]),
+            ]
+        )
 
     result_str = ' - '.join(string)
     if logger is not None:
@@ -524,6 +950,69 @@ def evaluate(
             cmc[9] * 100 if len(cmc) > 9 else -1.0,
             mAP * 100,
         )
+        if orientation_stats["count"] > 0:
+            orientation_count = max(int(orientation_stats["count"]), 1)
+            logger.info(
+                "VOP 摘要：count=%d mean_top_prob=%.4f mean_entropy=%.4f mean_concentration=%.4f mean_hypotheses=%.2f override=%d improve=%d worse=%d",
+                int(orientation_stats["count"]),
+                orientation_stats["top_prob_sum"] / orientation_count,
+                orientation_stats["entropy_sum"] / orientation_count,
+                orientation_stats["concentration_sum"] / orientation_count,
+                float(orientation_stats["hypothesis_sum"]) / orientation_count,
+                int(orientation_stats["override_count"]),
+                int(orientation_stats["improve_count"]),
+                int(orientation_stats["worse_count"]),
+            )
+            logger.info(
+                "VOP 耗时：mean_posterior_time=%.6fs/query mean_match_time=%.6fs/query mean_total_time=%.6fs/query",
+                orientation_stats["time_sum"] / orientation_count,
+                orientation_stats["match_time_sum"] / orientation_count,
+                (orientation_stats["time_sum"] + orientation_stats["match_time_sum"]) / orientation_count,
+            )
+        if with_match:
+            logger.info(
+                "FineLoc 阈值成功率: MA@3m=%.2f%% MA@5m=%.2f%% MA@10m=%.2f%% MA@20m=%.2f%%",
+                ma_metrics[3],
+                ma_metrics[5],
+                ma_metrics[10],
+                ma_metrics[20],
+            )
+            logger.info(
+                "FineLoc 稳健性统计: worse_than_coarse=%d(%.2f%%) fallback=%d(%.2f%%) identity_H_fallback=%d out_of_bounds=%d projection_invalid=%d",
+                int(fineloc_stats["worse_than_coarse"]),
+                worse_ratio,
+                int(fineloc_stats["fallback_count"]),
+                fallback_ratio,
+                int(fineloc_stats["identity_h_fallback_count"]),
+                int(fineloc_stats["out_of_bounds_count"]),
+                int(fineloc_stats["projection_invalid_count"]),
+            )
+            logger.info(
+                "FineLoc 匹配统计: mean_hypotheses=%.2f mean_retained_matches=%.1f mean_inliers=%.1f mean_inlier_ratio=%.4f",
+                mean_hypotheses,
+                mean_retained,
+                mean_inliers,
+                mean_inlier_ratio,
+            )
+            logger.info(
+                "FineLoc 运行时间: mean_vop_forward=%.6fs/query mean_matcher=%.6fs/query mean_total=%.6fs/query",
+                mean_vop_time,
+                mean_match_time,
+                mean_total_fineloc_time,
+            )
+            if confidence_stats["count"] > 0:
+                confidence_count = max(int(confidence_stats["count"]), 1)
+                logger.info(
+                    "Confidence 验证统计: count=%d accept=%d reject=%d override=%d mean_selected_rank=%.2f mean_score=%.4f mean_extra_time=%.6fs/query threshold=%.3f",
+                    int(confidence_stats["count"]),
+                    int(confidence_stats["accept_count"]),
+                    int(confidence_stats["reject_count"]),
+                    int(confidence_stats["override_count"]),
+                    float(confidence_stats["selected_rank_sum"]) / float(confidence_count),
+                    float(confidence_stats["selected_score_sum"]) / float(confidence_count),
+                    mean_confidence_time,
+                    float(confidence_threshold),
+                )
         logger.debug(
             "评估耗时统计：query提取=%.6fs, gallery推理=%.6fs, 分数拼接=%.6fs, 指标计算=%.6fs, 总耗时=%.6fs",
             query_extract_time,
@@ -553,9 +1042,57 @@ def evaluate(
             log_data["eval/recall@5"] = float(cmc[4] * 100)
         if len(cmc) > 9:
             log_data["eval/recall@10"] = float(cmc[9] * 100)
+        if with_match:
+            log_data["eval/ma@3m"] = ma_metrics[3]
+            log_data["eval/ma@5m"] = ma_metrics[5]
+            log_data["eval/ma@10m"] = ma_metrics[10]
+            log_data["eval/ma@20m"] = ma_metrics[20]
+            log_data["eval/worse_than_coarse_count"] = int(fineloc_stats["worse_than_coarse"])
+            log_data["eval/worse_than_coarse_ratio"] = worse_ratio
+            log_data["eval/fallback_count"] = int(fineloc_stats["fallback_count"])
+            log_data["eval/fallback_ratio"] = fallback_ratio
+            log_data["eval/identity_h_fallback_count"] = int(fineloc_stats["identity_h_fallback_count"])
+            log_data["eval/out_of_bounds_count"] = int(fineloc_stats["out_of_bounds_count"])
+            log_data["eval/projection_invalid_count"] = int(fineloc_stats["projection_invalid_count"])
+            log_data["eval/mean_hypotheses"] = mean_hypotheses
+            log_data["eval/mean_retained_matches"] = mean_retained
+            log_data["eval/mean_inliers"] = mean_inliers
+            log_data["eval/mean_inlier_ratio"] = mean_inlier_ratio
+            log_data["time/eval_visloc/fine_loc_vop_mean_s"] = mean_vop_time
+            log_data["time/eval_visloc/fine_loc_matcher_mean_s"] = mean_match_time
+            log_data["time/eval_visloc/fine_loc_confidence_mean_s"] = mean_confidence_time
+            log_data["time/eval_visloc/fine_loc_total_mean_s"] = mean_total_fineloc_time
+        if orientation_stats["count"] > 0:
+            orientation_count = max(int(orientation_stats["count"]), 1)
+            log_data["eval/vop_mean_top_prob"] = float(orientation_stats["top_prob_sum"] / orientation_count)
+            log_data["eval/vop_mean_entropy"] = float(orientation_stats["entropy_sum"] / orientation_count)
+            log_data["eval/vop_mean_concentration"] = float(orientation_stats["concentration_sum"] / orientation_count)
+            log_data["time/eval_visloc/vop_mean_s"] = float(orientation_stats["time_sum"] / orientation_count)
+            log_data["time/eval_visloc/vop_match_mean_s"] = float(orientation_stats["match_time_sum"] / orientation_count)
+            log_data["time/eval_visloc/vop_total_mean_s"] = float((orientation_stats["time_sum"] + orientation_stats["match_time_sum"]) / orientation_count)
+            log_data["eval/vop_mean_hypotheses"] = float(orientation_stats["hypothesis_sum"] / orientation_count)
+            log_data["eval/vop_override_count"] = int(orientation_stats["override_count"])
+            log_data["eval/vop_improve_count"] = int(orientation_stats["improve_count"])
+            log_data["eval/vop_worse_count"] = int(orientation_stats["worse_count"])
+        if confidence_stats["count"] > 0:
+            confidence_count = max(int(confidence_stats["count"]), 1)
+            log_data["eval/confidence_accept_count"] = int(confidence_stats["accept_count"])
+            log_data["eval/confidence_reject_count"] = int(confidence_stats["reject_count"])
+            log_data["eval/confidence_override_count"] = int(confidence_stats["override_count"])
+            log_data["eval/confidence_mean_selected_rank"] = float(confidence_stats["selected_rank_sum"]) / float(confidence_count)
+            log_data["eval/confidence_mean_score"] = float(confidence_stats["selected_score_sum"]) / float(confidence_count)
+            log_data["time/eval_visloc/confidence_mean_s"] = mean_confidence_time
         if epoch is not None:
             log_data["eval/epoch"] = int(epoch)
         wandb_run.log(log_data)
+
+    if confidence_dump_records is not None:
+        dump_path = os.path.abspath(str(confidence_dump_path))
+        os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump(confidence_dump_records, f, ensure_ascii=False, indent=2)
+        if logger is not None:
+            logger.info("Confidence dump 已保存: %s (queries=%d)", dump_path, len(confidence_dump_records))
     
     # cleanup and free memory on GPU
     if cleanup:

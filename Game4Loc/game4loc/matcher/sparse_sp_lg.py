@@ -680,14 +680,22 @@ class SparseSpLgMatcher:
                 "match_mode": "sparse",
                 "phase": selected_phase,
                 "inliers": 0,
+                "inlier_ratio": 0.0,
                 "rot_angle": 0.0,
                 "n_kept": 0,
+                "identity_h_fallback": True,
+                "fallback_to_center": True,
+                "fallback_reason": "all_failed",
+                "out_of_bounds": False,
+                "projection_invalid": False,
                 "final_vis_path": None,
             }
             return np.eye(3)
             
         H, inliers, inlier_ratio, rot_angle = b_H, b_inliers, b_ratio, b_angle
         
+        identity_h_fallback = False
+        fallback_reason = None
         if b_stats["n_kept"] < 4:
             self._save_sparse_bad_case(
                 image0, image1, b_stats["mk0"], b_stats["mk1"], "low_match",
@@ -697,6 +705,8 @@ class SparseSpLgMatcher:
             if self.stats["sparse_low_match"] <= 5 or (self.stats["sparse_low_match"] % 200 == 0):
                 self._log(logging.WARNING, "SP+LG 匹配点不足: mk0=%s mk1=%s，回退单位H", b_stats["mk0_shape"], b_stats["mk1_shape"])
             H = np.eye(3)
+            identity_h_fallback = True
+            fallback_reason = "low_match"
         elif inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
             self._save_sparse_bad_case(
                 image0, image1, b_stats["mk0"], b_stats["mk1"], "low_quality",
@@ -704,6 +714,8 @@ class SparseSpLgMatcher:
             )
             self._log(logging.DEBUG, "SP+LG H 质量不足，回退单位H: inliers=%d ratio=%.3f matches=%d", inliers, inlier_ratio, b_stats["n_kept"])
             H = np.eye(3)
+            identity_h_fallback = True
+            fallback_reason = "low_quality"
 
         final_reason = f"final_phase{selected_phase}"
         if b_stats["n_kept"] < 4 or inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
@@ -750,8 +762,14 @@ class SparseSpLgMatcher:
             "match_mode": "sparse",
             "phase": selected_phase,
             "inliers": int(inliers),
+            "inlier_ratio": float(inlier_ratio),
             "rot_angle": float(rot_angle),
             "n_kept": int(b_stats["n_kept"]),
+            "identity_h_fallback": bool(identity_h_fallback),
+            "fallback_to_center": bool(identity_h_fallback),
+            "fallback_reason": fallback_reason,
+            "out_of_bounds": False,
+            "projection_invalid": False,
             "final_vis_path": self.last_final_vis_path,
         }
         return H

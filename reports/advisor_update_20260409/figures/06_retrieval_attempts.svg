@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620" fill="none" role="img" aria-label="检索侧姿态分支消融">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="1280" height="620" fill="#F8FAFC"/>
+<style>text{font-family:"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB","DejaVu Sans","Arial",sans-serif;}</style>
+<rect x="24" y="24" width="1232" height="572" rx="18.0" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+<text x="52" y="68" fill="#0F172A" font-size="28" font-weight="700" text-anchor="start">检索侧姿态分支（仅作背景，不是细定位主线）</text>
+<text x="52" y="96" fill="#475569" font-size="15" font-weight="400" text-anchor="start">对齐明显有帮助，但姿态门控检索目前还不够稳定，暂不适合作为主投稿贡献。</text>
+<line x1="220" y1="520" x2="570" y2="520" stroke="#94A3B8" stroke-width="1.4"/>
+<line x1="220.0" y1="514" x2="220.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="220.0" y1="300" x2="220.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="220.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">0</text>
+<line x1="290.0" y1="514" x2="290.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="290.0" y1="300" x2="290.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="290.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">15</text>
+<line x1="360.0" y1="514" x2="360.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="360.0" y1="300" x2="360.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="360.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">30</text>
+<line x1="430.0" y1="514" x2="430.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="430.0" y1="300" x2="430.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="430.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">45</text>
+<line x1="500.0" y1="514" x2="500.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="500.0" y1="300" x2="500.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="500.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">60</text>
+<line x1="570.0" y1="514" x2="570.0" y2="526" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="570.0" y1="300" x2="570.0" y2="520" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="570.0" y="544" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">75</text>
+<text x="570" y="570" fill="#475569" font-size="13" font-weight="400" text-anchor="end">Recall@1（%）</text>
+<text x="180" y="186" fill="#0F172A" font-size="18" font-weight="700" text-anchor="end">A</text>
+<text x="190" y="186" fill="#475569" font-size="14" font-weight="400" text-anchor="start">无对齐 + 无姿态</text>
+<rect x="220" y="170" width="229.31019999999998" height="22" rx="8.0" fill="#64748B"/>
+<text x="457.3102" y="186" fill="#64748B" font-size="13" font-weight="600" text-anchor="start">49.1</text>
+<text x="180" y="264" fill="#0F172A" font-size="18" font-weight="700" text-anchor="end">B</text>
+<text x="190" y="264" fill="#475569" font-size="14" font-weight="400" text-anchor="start">无对齐 + 有姿态</text>
+<rect x="220" y="248" width="213.2186" height="22" rx="8.0" fill="#F97316"/>
+<text x="441.21860000000004" y="264" fill="#F97316" font-size="13" font-weight="600" text-anchor="start">45.7</text>
+<text x="180" y="342" fill="#0F172A" font-size="18" font-weight="700" text-anchor="end">C</text>
+<text x="190" y="342" fill="#475569" font-size="14" font-weight="400" text-anchor="start">有对齐 + 无姿态</text>
+<rect x="220" y="326" width="293.678" height="22" rx="8.0" fill="#0F766E"/>
+<text x="521.678" y="342" fill="#0F766E" font-size="13" font-weight="600" text-anchor="start">62.9</text>
+<text x="180" y="420" fill="#0F172A" font-size="18" font-weight="700" text-anchor="end">D</text>
+<text x="190" y="420" fill="#475569" font-size="14" font-weight="400" text-anchor="start">有对齐 + 有姿态</text>
+<rect x="220" y="404" width="305.74693333333335" height="22" rx="8.0" fill="#7C3AED"/>
+<text x="533.7469333333333" y="420" fill="#7C3AED" font-size="13" font-weight="600" text-anchor="start">65.5</text>
+<text x="680" y="150" fill="#0F172A" font-size="22" font-weight="700" text-anchor="start">对齐检索下的 3 次重复稳定性</text>
+<text x="680" y="178" fill="#475569" font-size="14" font-weight="400" text-anchor="start">圆点表示单个随机种子，横条表示 Recall@1 的均值。</text>
+<line x1="790" y1="500" x2="1150" y2="500" stroke="#94A3B8" stroke-width="1.4"/>
+<line x1="790.0" y1="494" x2="790.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="790.0" y1="280" x2="790.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="790.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">0</text>
+<line x1="862.0" y1="494" x2="862.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="862.0" y1="280" x2="862.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="862.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">15</text>
+<line x1="934.0" y1="494" x2="934.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="934.0" y1="280" x2="934.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="934.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">30</text>
+<line x1="1006.0" y1="494" x2="1006.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="1006.0" y1="280" x2="1006.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="1006.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">45</text>
+<line x1="1078.0" y1="494" x2="1078.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="1078.0" y1="280" x2="1078.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="1078.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">60</text>
+<line x1="1150.0" y1="494" x2="1150.0" y2="506" stroke="#94A3B8" stroke-width="1.0"/>
+<line x1="1150.0" y1="280" x2="1150.0" y2="500" stroke="#E2E8F0" stroke-width="1.0" stroke-dasharray="4 6"/>
+<text x="1150.0" y="524" fill="#475569" font-size="12" font-weight="400" text-anchor="middle">75</text>
+<text x="1150" y="550" fill="#475569" font-size="13" font-weight="400" text-anchor="end">Recall@1（%）</text>
+<text x="770" y="266" fill="#0F172A" font-size="16" font-weight="600" text-anchor="end">有对齐 + 无姿态</text>
+<rect x="790" y="250" width="304.82752" height="24" rx="8.0" fill="#0F766E"/>
+<text x="1102.82752" y="267" fill="#0F766E" font-size="13" font-weight="600" text-anchor="start">均值=63.51</text>
+<circle cx="1108.62064" cy="304" r="6" fill="#0F766E" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1108.62064" y="326" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s1:66.4</text>
+<circle cx="1096.20688" cy="304" r="6" fill="#0F766E" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1096.20688" y="326" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s2:63.8</text>
+<circle cx="1079.65504" cy="304" r="6" fill="#0F766E" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1079.65504" y="326" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s3:60.3</text>
+<text x="770" y="386" fill="#0F172A" font-size="16" font-weight="600" text-anchor="end">有对齐 + 姿态（残差）</text>
+<rect x="790" y="370" width="300.68976" height="24" rx="8.0" fill="#7C3AED"/>
+<text x="1098.68976" y="387" fill="#7C3AED" font-size="13" font-weight="600" text-anchor="start">均值=62.64</text>
+<circle cx="1083.79312" cy="424" r="6" fill="#7C3AED" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1083.79312" y="446" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s1:61.2</text>
+<circle cx="1100.34496" cy="424" r="6" fill="#7C3AED" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1100.34496" y="446" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s2:64.7</text>
+<circle cx="1087.9312" cy="424" r="6" fill="#7C3AED" stroke="#FFFFFF" stroke-width="1.2"/>
+<text x="1087.9312" y="446" fill="#475569" font-size="11" font-weight="400" text-anchor="middle">s3:62.1</text>
+<text x="52" y="588" fill="#475569" font-size="14" font-weight="400" text-anchor="start">结论：保留带对齐的检索作为背景信息，但不要把姿态门控检索当成主投稿路线。</text>
+</svg>

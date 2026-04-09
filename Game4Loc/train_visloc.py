@@ -194,6 +194,7 @@ def train_script(config):
     print("Image Size Ground:", img_size)
     print("Mean: {}".format(mean))
     print("Std:  {}\n".format(std)) 
+    print("DataLoader workers:", config.num_workers)
 
 
     #-----------------------------------------------------------------------------#
@@ -511,6 +512,8 @@ def parse_args():
     parser.add_argument('--k', type=float, default=5, help='weighted k')
 
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
+
+    parser.add_argument('--num_workers', type=int, default=None, help='Override DataLoader worker count')
     
     args = parser.parse_args()
     return args
@@ -547,5 +550,7 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.train_ratio = args.train_ratio
+    if args.num_workers is not None:
+        config.num_workers = args.num_workers
 
     train_script(config)

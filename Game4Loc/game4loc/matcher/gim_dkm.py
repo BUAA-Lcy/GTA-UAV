@@ -620,8 +620,14 @@ class GimDKM:
                 "match_mode": "dense",
                 "phase": 1,
                 "inliers": 0,
+                "inlier_ratio": 0.0,
                 "rot_angle": 0.0,
                 "n_kept": 0,
+                "identity_h_fallback": True,
+                "fallback_to_center": True,
+                "fallback_reason": "all_failed",
+                "out_of_bounds": False,
+                "projection_invalid": False,
             }
             if search_log_str:
                 self._log(logging.DEBUG, "Dense(DKM)四向搜索详情: %s => 全部失败", search_log_str)
@@ -658,8 +664,14 @@ class GimDKM:
             "match_mode": "dense",
             "phase": 1,
             "inliers": int(best_inliers),
+            "inlier_ratio": float(best_inliers) / float(max(int(best_stats["n_kept"]), 1)),
             "rot_angle": float(best_rot_angle),
             "n_kept": int(best_stats["n_kept"]),
+            "identity_h_fallback": False,
+            "fallback_to_center": False,
+            "fallback_reason": None,
+            "out_of_bounds": False,
+            "projection_invalid": False,
         }
         self.last_angle_results = []
 
@@ -684,6 +696,28 @@ class GimDKM:
         image1 = image1 * 0.5 + 0.5
 
         H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate, case_name=case_name)
+        if self.last_match_info is None:
+            self.last_match_info = {
+                "match_mode": self.match_mode,
+                "phase": 1,
+                "inliers": 0,
+                "inlier_ratio": 0.0,
+                "rot_angle": 0.0,
+                "n_kept": 0,
+                "identity_h_fallback": False,
+                "fallback_to_center": False,
+                "fallback_reason": None,
+                "out_of_bounds": False,
+                "projection_invalid": False,
+            }
+        else:
+            self.last_match_info = dict(self.last_match_info)
+            self.last_match_info.setdefault("inlier_ratio", 0.0)
+            self.last_match_info.setdefault("identity_h_fallback", False)
+            self.last_match_info.setdefault("fallback_to_center", False)
+            self.last_match_info.setdefault("fallback_reason", None)
+            self.last_match_info.setdefault("out_of_bounds", False)
+            self.last_match_info.setdefault("projection_invalid", False)
 
         h, w = image0.shape[2:]
 
@@ -699,12 +733,18 @@ class GimDKM:
         denom = proj_pixel_homog[2, 0]
         if not np.isfinite(denom) or abs(float(denom)) < 1e-6:
             self._log(logging.DEBUG, "with_match 投影分母异常，回退原始中心点")
+            self.last_match_info["projection_invalid"] = True
+            self.last_match_info["fallback_to_center"] = True
+            self.last_match_info["fallback_reason"] = "projection_invalid"
             return Xc_0, Yc_0
 
         proj_center_pixel = proj_pixel_homog[:2, 0] / denom
         x_pixel, y_pixel = float(proj_center_pixel[0]), float(proj_center_pixel[1])
         if (not np.isfinite(x_pixel)) or (not np.isfinite(y_pixel)) or x_pixel < -0.5 * w or x_pixel > 1.5 * w or y_pixel < -0.5 * h or y_pixel > 1.5 * h:
             self._log(logging.DEBUG, "with_match 投影越界(x=%.3f,y=%.3f,w=%d,h=%d)，回退原始中心点", x_pixel, y_pixel, w, h)
+            self.last_match_info["out_of_bounds"] = True
+            self.last_match_info["fallback_to_center"] = True
+            self.last_match_info["fallback_reason"] = "out_of_bounds"
             return Xc_0, Yc_0
 
         X = Xtl_0 + x_pixel * s_x

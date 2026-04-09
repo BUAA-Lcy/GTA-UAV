@@ -86,6 +86,13 @@ class Configuration:
     multi_scale: bool = True
     sparse_save_final_vis: bool = True
     angle_experiment: bool = False
+    orientation_checkpoint: str = ""
+    orientation_mode: str = "off"
+    orientation_fusion_weight: float = 0.5
+    orientation_topk: int = 1
+    confidence_checkpoint: str = ""
+    confidence_threshold: float = 0.5
+    confidence_dump_path: str = ""
 
     test_mode: str = "pos"
     query_mode: str = "D2S"
@@ -154,6 +161,16 @@ def eval_script(config):
             if config.use_yaw:
                 logger.info("VisLoc yaw 默认约定: 使用 -Phi1 对齐正北卫星图 (即 Phi1>0 时查询航拍图顺时针旋转 Phi1°)")
             logger.info("VisLoc 稀疏最佳角度评分: score = ratio * max(inliers - %d, 0)", config.sparse_angle_score_inlier_offset)
+            logger.info("VOP 方向后验模式: %s", config.orientation_mode)
+            if config.orientation_mode != "off":
+                logger.info("VOP 权重路径: %s", config.orientation_checkpoint)
+                logger.info("VOP 融合权重: %.3f", config.orientation_fusion_weight)
+                logger.info("VOP top-k 假设数: %d", int(config.orientation_topk))
+            if config.orientation_mode == "prior_topk" and str(config.confidence_checkpoint).strip():
+                logger.info("Confidence verifier 权重路径: %s", config.confidence_checkpoint)
+                logger.info("Confidence verifier 阈值: %.3f", float(config.confidence_threshold))
+            if str(config.confidence_dump_path).strip():
+                logger.info("Confidence dump 输出路径: %s", config.confidence_dump_path)
             logger.info("VisLoc 稀疏多尺度匹配: %s", "开启" if config.multi_scale else "关闭")
             logger.info("VisLoc 稀疏匹配使用内置稳定默认参数: phase2关闭, RANSAC=RANSAC, reproj=20, SP.det=0.003, SP.kpts=2048, SP.nms=4, scales=(1.0, 0.8, 0.6, 1.2)")
             logger.info(
@@ -334,6 +351,13 @@ def eval_script(config):
             sparse_use_multi_scale=config.multi_scale,
             sparse_save_final_vis=config.sparse_save_final_vis,
             angle_experiment=effective_angle_experiment,
+            orientation_checkpoint=config.orientation_checkpoint,
+            orientation_mode=config.orientation_mode,
+            orientation_fusion_weight=config.orientation_fusion_weight,
+            orientation_topk=config.orientation_topk,
+            confidence_checkpoint=config.confidence_checkpoint,
+            confidence_threshold=config.confidence_threshold,
+            confidence_dump_path=config.confidence_dump_path,
             wandb_run=wandb_run,
             logger=logger,
         )
@@ -368,6 +392,13 @@ def parse_args():
     parser.add_argument("--no_rotate", action="store_const", const=0.0, dest="rotate", help=argparse.SUPPRESS)
     parser.add_argument("--multi_scale", type=parse_bool, nargs="?", const=True, default=True, help="Enable sparse multi-scale matching. Default is True. Use '--multi_scale False' to disable.")
     parser.add_argument("--angle_experiment", action="store_true", help="Log detailed per-angle sparse matching results for each VisLoc sample")
+    parser.add_argument("--orientation_checkpoint", type=str, default="", help="Checkpoint path for the visual orientation posterior head")
+    parser.add_argument("--orientation_mode", type=str, default="off", choices=("off", "single", "fusion", "prior_single", "prior_topk"), help="How to use the visual orientation posterior")
+    parser.add_argument("--orientation_fusion_weight", type=float, default=0.5, help="Weight of the VOP posterior when orientation_mode=fusion")
+    parser.add_argument("--orientation_topk", type=int, default=1, help="Number of VOP angle hypotheses to evaluate when orientation_mode=prior_topk")
+    parser.add_argument("--confidence_checkpoint", type=str, default="", help="Checkpoint path for the lightweight confidence-aware verifier used after prior_topk")
+    parser.add_argument("--confidence_threshold", type=float, default=0.5, help="Acceptance threshold for the confidence-aware verifier")
+    parser.add_argument("--confidence_dump_path", type=str, default="", help="Optional JSON path for dumping top-k candidate verification records")
     parser.add_argument("--query_limit", type=int, default=0, help="Limit the number of queries for quick evaluation (0 for all)")
     parser.add_argument("--iteration", action="store_true", help="Only evaluate on a fixed 1/10 query subset for faster iteration")
     parser.add_argument("--plot_acc_threshold", action="store_true", help="Print accuracy-threshold curve values after evaluation")
@@ -399,6 +430,13 @@ if __name__ == "__main__":
     config.rotate = args.rotate
     config.multi_scale = args.multi_scale
     config.angle_experiment = args.angle_experiment
+    config.orientation_checkpoint = args.orientation_checkpoint
+    config.orientation_mode = args.orientation_mode
+    config.orientation_fusion_weight = args.orientation_fusion_weight
+    config.orientation_topk = max(1, int(args.orientation_topk))
+    config.confidence_checkpoint = args.confidence_checkpoint
+    config.confidence_threshold = float(args.confidence_threshold)
+    config.confidence_dump_path = args.confidence_dump_path
     config.query_limit = args.query_limit
     config.iteration = args.iteration
     config.plot_acc_threshold = args.plot_acc_threshold

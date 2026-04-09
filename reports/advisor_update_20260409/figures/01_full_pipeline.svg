@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="660" viewBox="0 0 1460 660" fill="none" role="img" aria-label="从检索到定位的完整流程">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="1460" height="660" fill="#F8FAFC"/>
+<style>text{font-family:"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB","DejaVu Sans","Arial",sans-serif;}</style>
+<rect x="20" y="20" width="1420" height="620" rx="18.0" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+<text x="48" y="60" fill="#0F172A" font-size="28" font-weight="700" text-anchor="start">从检索到定位的完整算法流程</text>
+<text x="48" y="88" fill="#475569" font-size="15" font-weight="400" text-anchor="start">在线推理时，VOP 插在 top-1 候选进入匹配之前，用来缩小角度搜索空间。</text>
+<rect x="50" y="170" width="165" height="82" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+<text x="132.5" y="198.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">1 输入</text>
+<text x="132.5" y="220.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">无人机查询图像</text>
+<rect x="255" y="170" width="180" height="82" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+<text x="345.0" y="198.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">2 检索模型</text>
+<text x="345.0" y="220.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">排序卫星图库</text>
+<rect x="475" y="170" width="180" height="82" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+<text x="565.0" y="198.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">3 得到 top-K</text>
+<text x="565.0" y="220.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">卫星候选</text>
+<rect x="695" y="170" width="200" height="82" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+<text x="795.0" y="198.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">4 取 top-1 候选</text>
+<text x="795.0" y="220.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">进入细定位</text>
+<rect x="220" y="360" width="200" height="82" rx="16" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.2"/>
+<text x="320.0" y="388.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">5 提取检索特征</text>
+<text x="320.0" y="410.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">query / gallery</text>
+<rect x="460" y="360" width="220" height="82" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.2"/>
+<text x="570.0" y="388.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">6 VOP 预测角度后验</text>
+<text x="570.0" y="410.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">选出 top-k</text>
+<rect x="720" y="360" width="240" height="82" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.2"/>
+<text x="840.0" y="388.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">7 对每个候选角度</text>
+<text x="840.0" y="410.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">旋转 query 并跑匹配器</text>
+<rect x="1000" y="360" width="220" height="82" rx="16" fill="#ECFDF5" stroke="#86EFAC" stroke-width="1.2"/>
+<text x="1110.0" y="388.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">8 比较几何质量</text>
+<text x="1110.0" y="410.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">内点数 / 内点率选优</text>
+<rect x="1260" y="360" width="150" height="82" rx="16" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+<text x="1335.0" y="394.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">9 输出最终位置</text>
+<rect x="1010" y="170" width="390" height="82" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+<text x="1205.0" y="198.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">结果统计与诊断</text>
+<text x="1205.0" y="220.0" fill="#0F172A" font-size="17" font-weight="600" text-anchor="middle">Dis@K / 内点 / 回退率 / 耗时</text>
+<line x1="215" y1="211" x2="255" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="435" y1="211" x2="475" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="655" y1="211" x2="695" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="795" y1="252" x2="795" y2="310" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="795" y1="310" x2="320" y2="310" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="320" y1="310" x2="320" y2="360" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="420" y1="401" x2="460" y2="401" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="680" y1="401" x2="720" y2="401" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="960" y1="401" x2="1000" y2="401" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1220" y1="401" x2="1260" y2="401" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="895" y1="211" x2="1010" y2="211" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1320" y1="252" x2="1320" y2="310" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1320" y1="310" x2="1335" y2="310" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="1110" y1="252" x2="1110" y2="360" stroke="#94A3B8" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="220" y="478" fill="#7C3AED" font-size="20" font-weight="700" text-anchor="start">当前主线：VOP top-k 方案</text>
+<text x="220" y="506" fill="#475569" font-size="16" font-weight="400" text-anchor="start">含义是先选少量角度，再分别做真实匹配与几何验证。</text>
+<text x="220" y="548" fill="#475569" font-size="16" font-weight="400" text-anchor="start">与 baseline 的区别：不是对所有角度穷举搜索，而是先做方向筛选。</text>
+<text x="1000" y="478" fill="#2563EB" font-size="20" font-weight="700" text-anchor="start">可选分支：置信度判别器</text>
+<text x="1000" y="506" fill="#475569" font-size="16" font-weight="400" text-anchor="start">它用于在多个候选细定位结果之间再做一次接受/拒绝。</text>
+<text x="1000" y="548" fill="#475569" font-size="16" font-weight="400" text-anchor="start">但当前阶段不建议把它作为主贡献来讲。</text>
+</svg>
