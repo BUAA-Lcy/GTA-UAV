@@ -41,9 +41,18 @@ def parse_args():
     parser.add_argument("--ce_entropy_max", type=float, default=0.8)
     parser.add_argument("--filter_entropy_max", type=float, default=1.0)
     parser.add_argument("--filter_gap_m", type=float, default=0.0)
+    parser.add_argument("--filter_best_distance_max", type=float, default=float("inf"))
     parser.add_argument("--partial_unfreeze", type=str, default="none", choices=("none", "last_block"))
     parser.add_argument("--supervision_mode", type=str, default="posterior", choices=("posterior", "useful_bce"))
     parser.add_argument("--useful_delta_m", type=float, default=5.0)
+    parser.add_argument(
+        "--pair_weight_mode",
+        type=str,
+        default="uniform",
+        choices=("uniform", "best_distance_sigmoid"),
+    )
+    parser.add_argument("--pair_weight_center_m", type=float, default=30.0)
+    parser.add_argument("--pair_weight_scale_m", type=float, default=10.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="")
     return parser.parse_args()
@@ -75,10 +84,21 @@ def load_rgb_tensor(image_path: str, transform):
 
 
 class VOPDataset(Dataset):
-    def __init__(self, records, transform, neg_prob=0.25):
+    def __init__(
+        self,
+        records,
+        transform,
+        neg_prob=0.25,
+        pair_weight_mode="uniform",
+        pair_weight_center_m=30.0,
+        pair_weight_scale_m=10.0,
+    ):
         self.records = list(records)
         self.transform = transform
         self.neg_prob = float(neg_prob)
+        self.pair_weight_mode = str(pair_weight_mode).lower()
+        self.pair_weight_center_m = float(pair_weight_center_m)
+        self.pair_weight_scale_m = float(pair_weight_scale_m)
         self.gallery_pool = [record["gallery_path"] for record in self.records]
         self.uniform_target = None
         if self.records:
@@ -88,6 +108,18 @@ class VOPDataset(Dataset):
     def __len__(self):
         return len(self.records)
 
+    def compute_pair_weight(self, record):
+        if self.pair_weight_mode == "uniform":
+            return 1.0
+        if self.pair_weight_mode == "best_distance_sigmoid":
+            best_distance = float(record.get("best_distance_m", float("inf")))
+            if not math.isfinite(best_distance):
+                return 0.0
+            scale = max(self.pair_weight_scale_m, 1e-6)
+            value = 1.0 / (1.0 + math.exp((best_distance - self.pair_weight_center_m) / scale))
+            return float(min(max(value, 0.0), 1.0))
+        raise ValueError(f"Unsupported pair_weight_mode: {self.pair_weight_mode}")
+
     def __getitem__(self, index):
         record = self.records[index]
         query_img = load_rgb_tensor(record["query_path"], self.transform)
@@ -95,6 +127,7 @@ class VOPDataset(Dataset):
         best_index = int(record.get("best_index", int(torch.argmin(torch.nan_to_num(distances, nan=float("inf"), posinf=float("inf"))).item())))
         distance_gap = float(record.get("distance_gap_m", float("inf")))
         target_entropy = float(compute_entropy(torch.tensor(record["target_probs"], dtype=torch.float32).unsqueeze(0))[0].item())
+        pair_weight = float(self.compute_pair_weight(record))
 
         use_negative = self.neg_prob > 0.0 and random.random() < self.neg_prob and len(self.records) > 1
         if use_negative:
@@ -109,6 +142,7 @@ class VOPDataset(Dataset):
             best_index = -1
             distance_gap = float("inf")
             target_entropy = 1.0
+            pair_weight = 1.0
         else:
             gallery_path = record["gallery_path"]
             target = torch.tensor(record["target_probs"], dtype=torch.float32)
@@ -116,7 +150,18 @@ class VOPDataset(Dataset):
             ranking_weight = torch.zeros_like(target, dtype=torch.float32)
 
         gallery_img = load_rgb_tensor(gallery_path, self.transform)
-        return query_img, gallery_img, target, distances, ranking_mask, ranking_weight, best_index, distance_gap, target_entropy
+        return (
+            query_img,
+            gallery_img,
+            target,
+            distances,
+            ranking_mask,
+            ranking_weight,
+            best_index,
+            distance_gap,
+            target_entropy,
+            torch.tensor(pair_weight, dtype=torch.float32),
+        )
 
 
 def compute_top1_angle_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
@@ -203,7 +248,12 @@ def build_useful_targets(distances: torch.Tensor, best_indices: torch.Tensor, us
     return targets, valid_mask
 
 
-def compute_useful_bce_loss(logits: torch.Tensor, useful_targets: torch.Tensor, valid_mask: torch.Tensor):
+def compute_useful_bce_loss(
+    logits: torch.Tensor,
+    useful_targets: torch.Tensor,
+    valid_mask: torch.Tensor,
+    sample_weights: torch.Tensor | None = None,
+):
     if useful_targets.numel() == 0:
         return logits.new_tensor(0.0)
 
@@ -218,6 +268,8 @@ def compute_useful_bce_loss(logits: torch.Tensor, useful_targets: torch.Tensor, 
     weights = torch.where(useful_targets > 0.5, pos_weight, torch.ones_like(useful_targets))
     loss_map = F.binary_cross_entropy_with_logits(logits, useful_targets, reduction="none")
     weight_mask = weights * valid_mask.float()
+    if sample_weights is not None:
+        weight_mask = weight_mask * sample_weights[:, None].clamp_min(0.0)
     denom = weight_mask.sum().clamp_min(1.0)
     return (loss_map * weight_mask).sum() / denom
 
@@ -267,7 +319,7 @@ def run_epoch(
 
     model.train(train)
     iterator = tqdm(loader, desc="train" if train else "val", leave=False)
-    for query_img, gallery_img, target_probs, distances, _, _, best_index, distance_gap, target_entropy_scalar in iterator:
+    for query_img, gallery_img, target_probs, distances, _, _, best_index, distance_gap, target_entropy_scalar, pair_weight in iterator:
         query_img = query_img.to(device=device, non_blocking=True)
         gallery_img = gallery_img.to(device=device, non_blocking=True)
         target_probs = target_probs.to(device=device, non_blocking=True)
@@ -275,6 +327,7 @@ def run_epoch(
         best_index = best_index.to(device=device, non_blocking=True, dtype=torch.long)
         distance_gap = distance_gap.to(device=device, non_blocking=True, dtype=torch.float32)
         target_entropy_scalar = target_entropy_scalar.to(device=device, non_blocking=True, dtype=torch.float32)
+        pair_weight = pair_weight.to(device=device, non_blocking=True, dtype=torch.float32)
 
         with torch.set_grad_enabled(bool(train and train_backbone)):
             gallery_map = backbone.extract_feature_map(gallery_img, branch="img2")
@@ -299,6 +352,7 @@ def run_epoch(
                 logits=logits,
                 useful_targets=useful_targets,
                 valid_mask=useful_valid_mask,
+                sample_weights=pair_weight,
             )
             pair_count = 0
             ce_sample_count = 0
@@ -375,6 +429,7 @@ def summarize_teacher(records):
     best_probs = []
     prob_margins = []
     distance_gaps = []
+    best_distances = []
     informative = 0
     for record in records:
         probs = torch.tensor(record["target_probs"], dtype=torch.float32)
@@ -382,6 +437,9 @@ def summarize_teacher(records):
         sorted_probs = torch.sort(probs, descending=True).values
         best_probs.append(float(sorted_probs[0].item()))
         prob_margins.append(float((sorted_probs[0] - sorted_probs[1]).item()))
+        best_distance = float(record.get("best_distance_m", float("inf")))
+        if math.isfinite(best_distance):
+            best_distances.append(best_distance)
         gap = float(record.get("distance_gap_m", float("inf")))
         if math.isfinite(gap):
             distance_gaps.append(gap)
@@ -392,25 +450,56 @@ def summarize_teacher(records):
         "entropy_mean": float(sum(entropies) / len(entropies)),
         "best_prob_mean": float(sum(best_probs) / len(best_probs)),
         "prob_margin_mean": float(sum(prob_margins) / len(prob_margins)),
+        "best_distance_mean_m": float(sum(best_distances) / len(best_distances)) if best_distances else float("nan"),
         "distance_gap_mean_m": float(sum(distance_gaps) / len(distance_gaps)) if distance_gaps else float("nan"),
         "distance_gap_ge_5m_count": int(informative),
     }
 
 
-def filter_teacher_records(records, filter_entropy_max: float, filter_gap_m: float):
+def summarize_pair_weights(records, pair_weight_mode: str, pair_weight_center_m: float, pair_weight_scale_m: float):
+    if not records:
+        return {}
+    dataset = VOPDataset(
+        records=[],
+        transform=None,
+        neg_prob=0.0,
+        pair_weight_mode=pair_weight_mode,
+        pair_weight_center_m=pair_weight_center_m,
+        pair_weight_scale_m=pair_weight_scale_m,
+    )
+    weights = [dataset.compute_pair_weight(record) for record in records]
+    arr = np.asarray(weights, dtype=np.float64)
+    return {
+        "mode": str(pair_weight_mode),
+        "count": int(arr.size),
+        "mean": float(arr.mean()) if arr.size else float("nan"),
+        "median": float(np.median(arr)) if arr.size else float("nan"),
+        "min": float(arr.min()) if arr.size else float("nan"),
+        "max": float(arr.max()) if arr.size else float("nan"),
+        "ge_0.5_ratio": float(np.mean(arr >= 0.5)) if arr.size else float("nan"),
+        "ge_0.8_ratio": float(np.mean(arr >= 0.8)) if arr.size else float("nan"),
+    }
+
+
+def filter_teacher_records(records, filter_entropy_max: float, filter_gap_m: float, filter_best_distance_max: float):
     kept = []
     entropy_max = float(filter_entropy_max)
     gap_min = float(filter_gap_m)
+    best_distance_max = float(filter_best_distance_max)
     for record in records:
         probs = torch.tensor(record["target_probs"], dtype=torch.float32)
         entropy = float(compute_entropy(probs.unsqueeze(0))[0].item())
         gap = float(record.get("distance_gap_m", float("inf")))
+        best_distance = float(record.get("best_distance_m", float("inf")))
         if entropy > entropy_max:
             continue
         if math.isfinite(gap) and gap < gap_min:
             continue
         if not math.isfinite(gap) and gap_min > 0.0:
             continue
+        if math.isfinite(best_distance_max):
+            if (not math.isfinite(best_distance)) or best_distance >= best_distance_max:
+                continue
         kept.append(record)
     return kept
 
@@ -447,19 +536,28 @@ def main():
         records,
         filter_entropy_max=args.filter_entropy_max,
         filter_gap_m=args.filter_gap_m,
+        filter_best_distance_max=args.filter_best_distance_max,
     )
     if not filtered_records:
         raise RuntimeError(
-            f"Teacher filtering removed all samples. filter_entropy_max={args.filter_entropy_max}, filter_gap_m={args.filter_gap_m}"
+            "Teacher filtering removed all samples. "
+            f"filter_entropy_max={args.filter_entropy_max}, "
+            f"filter_gap_m={args.filter_gap_m}, "
+            f"filter_best_distance_max={args.filter_best_distance_max}"
         )
     if len(filtered_records) != len(records):
         print(
             "Teacher filter applied: "
             f"kept {len(filtered_records)}/{len(records)} "
-            f"(entropy<={args.filter_entropy_max}, gap>={args.filter_gap_m}m)"
+            f"(entropy<={args.filter_entropy_max}, gap>={args.filter_gap_m}m, "
+            f"best_distance<{args.filter_best_distance_max}m)"
         )
         print(f"Teacher summary (filtered): {summarize_teacher(filtered_records)}")
     records = filtered_records
+    print(
+        "Pair-weight summary: "
+        f"{summarize_pair_weights(records, args.pair_weight_mode, args.pair_weight_center_m, args.pair_weight_scale_m)}"
+    )
 
     candidate_angles = teacher_cache.get("records", [])[0]["candidate_angles_deg"]
     expected_angles = build_rotation_angle_list(float(teacher_cache["rotate_step"]))
@@ -492,12 +590,26 @@ def main():
 
     data_config = backbone.get_config()
     val_transforms = build_eval_transform(args.img_size, mean=data_config["mean"], std=data_config["std"])
-    train_dataset = VOPDataset(train_records, transform=val_transforms, neg_prob=args.neg_prob)
-    val_dataset = VOPDataset(val_records, transform=val_transforms, neg_prob=0.0)
+    train_dataset = VOPDataset(
+        train_records,
+        transform=val_transforms,
+        neg_prob=args.neg_prob,
+        pair_weight_mode=args.pair_weight_mode,
+        pair_weight_center_m=args.pair_weight_center_m,
+        pair_weight_scale_m=args.pair_weight_scale_m,
+    )
+    val_dataset = VOPDataset(
+        val_records,
+        transform=val_transforms,
+        neg_prob=0.0,
+        pair_weight_mode=args.pair_weight_mode,
+        pair_weight_center_m=args.pair_weight_center_m,
+        pair_weight_scale_m=args.pair_weight_scale_m,
+    )
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
-    sample_query, sample_gallery, _, _, _, _, _, _, _ = train_dataset[0]
+    sample_query, sample_gallery, _, _, _, _, _, _, _, _ = train_dataset[0]
     with torch.no_grad():
         sample_map = backbone.extract_feature_map(sample_gallery.unsqueeze(0).to(device), branch="img2")
     vop = VisualOrientationPosterior(in_channels=int(sample_map.shape[1]), hidden_dim=args.hidden_dim).to(device)
@@ -585,11 +697,15 @@ def main():
             "ce_entropy_max": float(args.ce_entropy_max),
             "filter_entropy_max": float(args.filter_entropy_max),
             "filter_gap_m": float(args.filter_gap_m),
+            "filter_best_distance_max": float(args.filter_best_distance_max),
             "filtered_record_count": int(len(records)),
             "partial_unfreeze": args.partial_unfreeze,
             "unfrozen_names": unfrozen_names,
             "supervision_mode": str(args.supervision_mode),
             "useful_delta_m": float(args.useful_delta_m),
+            "pair_weight_mode": str(args.pair_weight_mode),
+            "pair_weight_center_m": float(args.pair_weight_center_m),
+            "pair_weight_scale_m": float(args.pair_weight_scale_m),
         },
         args.output_path,
     )
