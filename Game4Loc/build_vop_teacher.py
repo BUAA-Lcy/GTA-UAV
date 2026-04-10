@@ -11,6 +11,7 @@ from geopy.distance import geodesic
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 
+from game4loc.dataset.gta import sate2loc
 from game4loc.dataset.visloc import tile2sate
 from game4loc.evaluate.visloc import project_match_center_from_h
 from game4loc.matcher.gim_dkm import GimDKM
@@ -20,6 +21,7 @@ from game4loc.orientation import build_rotation_angle_list, compute_entropy
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build soft teacher targets for VOP.")
+    parser.add_argument("--dataset", type=str, default="visloc", choices=("visloc", "gta"))
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--pairs_meta_file", type=str, required=True)
     parser.add_argument("--model", type=str, default="vit_base_patch16_rope_reg1_gap_256.sbb_in1k")
@@ -43,7 +45,7 @@ def build_eval_transform(img_size: int, mean, std):
     )
 
 
-def load_pair_records(data_root: str, pairs_meta_file: str, query_limit: int = 0) -> List[dict]:
+def load_visloc_pair_records(data_root: str, pairs_meta_file: str, query_limit: int = 0) -> List[dict]:
     with open(os.path.join(data_root, pairs_meta_file), "r", encoding="utf-8") as f:
         pairs_meta = json.load(f)
 
@@ -53,18 +55,84 @@ def load_pair_records(data_root: str, pairs_meta_file: str, query_limit: int = 0
         if not positive_tiles:
             continue
         gallery_name = positive_tiles[0]
+        gallery_center_lat_lon, gallery_topleft_lat_lon = tile2sate(gallery_name)
         records.append(
             {
+                "dataset": "visloc",
                 "query_name": item["drone_img_name"],
                 "gallery_name": gallery_name,
                 "query_path": os.path.join(data_root, item["drone_img_dir"], item["drone_img_name"]),
                 "gallery_path": os.path.join(data_root, item["sate_img_dir"], gallery_name),
-                "query_loc_lat_lon": [float(item["drone_loc_lat_lon"][0]), float(item["drone_loc_lat_lon"][1])],
+                "query_eval_loc": [float(item["drone_loc_lat_lon"][0]), float(item["drone_loc_lat_lon"][1])],
+                "gallery_center_xy": [float(gallery_center_lat_lon[1]), float(gallery_center_lat_lon[0])],
+                "gallery_topleft_xy": [float(gallery_topleft_lat_lon[1]), float(gallery_topleft_lat_lon[0])],
+                "distance_space": "geodesic",
             }
         )
         if query_limit > 0 and len(records) >= query_limit:
             break
     return records
+
+
+def load_gta_pair_records(data_root: str, pairs_meta_file: str, query_limit: int = 0) -> List[dict]:
+    with open(os.path.join(data_root, pairs_meta_file), "r", encoding="utf-8") as f:
+        pairs_meta = json.load(f)
+
+    records = []
+    for item in pairs_meta:
+        positive_tiles = item.get("pair_pos_sate_img_list") or []
+        if not positive_tiles:
+            continue
+        gallery_name = positive_tiles[0]
+        tile_zoom, offset, tile_x, tile_y = gallery_name.replace(".png", "").split("_")
+        gallery_center_x, gallery_center_y, gallery_topleft_x, gallery_topleft_y = sate2loc(
+            int(tile_zoom),
+            int(offset),
+            int(tile_x),
+            int(tile_y),
+        )
+        records.append(
+            {
+                "dataset": "gta",
+                "query_name": item["drone_img_name"],
+                "gallery_name": gallery_name,
+                "query_path": os.path.join(data_root, item["drone_img_dir"], item["drone_img_name"]),
+                "gallery_path": os.path.join(data_root, item["sate_img_dir"], gallery_name),
+                "query_eval_loc": [float(item["drone_loc_x_y"][0]), float(item["drone_loc_x_y"][1])],
+                "gallery_center_xy": [float(gallery_center_x), float(gallery_center_y)],
+                "gallery_topleft_xy": [float(gallery_topleft_x), float(gallery_topleft_y)],
+                "distance_space": "xy",
+            }
+        )
+        if query_limit > 0 and len(records) >= query_limit:
+            break
+    return records
+
+
+def load_pair_records(dataset: str, data_root: str, pairs_meta_file: str, query_limit: int = 0) -> List[dict]:
+    dataset_key = str(dataset).strip().lower()
+    if dataset_key == "visloc":
+        return load_visloc_pair_records(data_root, pairs_meta_file, query_limit=query_limit)
+    if dataset_key == "gta":
+        return load_gta_pair_records(data_root, pairs_meta_file, query_limit=query_limit)
+    raise ValueError(f"Unsupported dataset: {dataset}")
+
+
+def compute_distance_m(distance_space: str, query_eval_loc, projected_xy) -> float:
+    if projected_xy is None:
+        return float("inf")
+
+    if str(distance_space).lower() == "geodesic":
+        pred_lat_lon = (float(projected_xy[1]), float(projected_xy[0]))
+        query_lat_lon = (float(query_eval_loc[0]), float(query_eval_loc[1]))
+        return float(geodesic(query_lat_lon, pred_lat_lon).meters)
+
+    if str(distance_space).lower() == "xy":
+        dx = float(query_eval_loc[0]) - float(projected_xy[0])
+        dy = float(query_eval_loc[1]) - float(projected_xy[1])
+        return float(math.hypot(dx, dy))
+
+    raise ValueError(f"Unsupported distance space: {distance_space}")
 
 
 def load_rgb_tensor(image_path: str, transform):
@@ -145,7 +213,7 @@ def main():
         logger=None,
         sparse_save_final_vis=False,
     )
-    records = load_pair_records(args.data_root, args.pairs_meta_file, query_limit=args.query_limit)
+    records = load_pair_records(args.dataset, args.data_root, args.pairs_meta_file, query_limit=args.query_limit)
     expected_angles = build_rotation_angle_list(args.rotate_step)
     teacher_records = []
 
@@ -153,14 +221,13 @@ def main():
         gallery_tensor = load_rgb_tensor(record["gallery_path"], val_transforms)
         query_tensor = load_rgb_tensor(record["query_path"], val_transforms)
 
-        gallery_center_lat_lon, gallery_topleft_lat_lon = tile2sate(record["gallery_name"])
-        gallery_center_lon_lat = (gallery_center_lat_lon[1], gallery_center_lat_lon[0])
-        gallery_topleft_lon_lat = (gallery_topleft_lat_lon[1], gallery_topleft_lat_lon[0])
+        gallery_center_xy = (float(record["gallery_center_xy"][0]), float(record["gallery_center_xy"][1]))
+        gallery_topleft_xy = (float(record["gallery_topleft_xy"][0]), float(record["gallery_topleft_xy"][1]))
         _ = matcher.est_center(
             gallery_tensor,
             query_tensor,
-            gallery_center_lon_lat,
-            gallery_topleft_lon_lat,
+            gallery_center_xy,
+            gallery_topleft_xy,
             yaw0=None,
             yaw1=None,
             rotate=args.rotate_step,
@@ -175,18 +242,22 @@ def main():
         for angle_result in angle_results:
             rot_angle = float(angle_result.get("rot_angle", 0.0))
             candidate_angles.append(rot_angle)
-            loc_lon_lat = project_match_center_from_h(
+            loc_xy = project_match_center_from_h(
                 angle_result.get("homography"),
                 gallery_tensor,
-                gallery_center_lon_lat,
-                gallery_topleft_lon_lat,
+                gallery_center_xy,
+                gallery_topleft_xy,
             )
-            if loc_lon_lat is None:
+            if loc_xy is None:
                 distances_m.append(float("inf"))
                 continue
-            pred_lat_lon = (float(loc_lon_lat[1]), float(loc_lon_lat[0]))
-            query_lat_lon = (record["query_loc_lat_lon"][0], record["query_loc_lat_lon"][1])
-            distances_m.append(float(geodesic(query_lat_lon, pred_lat_lon).meters))
+            distances_m.append(
+                compute_distance_m(
+                    distance_space=record["distance_space"],
+                    query_eval_loc=record["query_eval_loc"],
+                    projected_xy=loc_xy,
+                )
+            )
 
         if candidate_angles != expected_angles:
             raise ValueError(
@@ -231,6 +302,7 @@ def main():
             "records": teacher_records,
             "rotate_step": float(args.rotate_step),
             "temperature_m": float(args.temperature_m),
+            "dataset": str(args.dataset),
             "pairs_meta_file": args.pairs_meta_file,
             "img_size": int(args.img_size),
             "model": args.model,

@@ -26,6 +26,7 @@ class Configuration:
     # Model
     # model: str = 'convnext_base.fb_in22k_ft_in1k_384'
     model: str = 'vit_base_patch16_rope_reg1_gap_256.sbb_in1k'
+    share_weights: bool = True
     
     # Override model image size
     img_size: int = 384
@@ -39,6 +40,10 @@ class Configuration:
     # With Fine Matching
     with_match: bool = False
     match_mode: str = "sparse"
+    orientation_checkpoint: str = ""
+    orientation_mode: str = "off"
+    orientation_fusion_weight: float = 0.5
+    orientation_topk: int = 1
 
     # set num_workers to 0 if on Windows
     num_workers: int = 0 if os.name == 'nt' else 4 
@@ -91,6 +96,13 @@ def eval_script(config):
         if config.match_mode == 'sparse':
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "启用 (如果数据提供)" if config.use_yaw else "关闭 (默认仅做旋转搜索)")
             logger.info("稀疏匹配四向旋转搜索 (rotate): %s", "启用" if config.rotate else "关闭")
+            logger.info("VOP 方向后验模式: %s", config.orientation_mode)
+            if config.orientation_mode != "off":
+                logger.info("VOP 权重路径: %s", config.orientation_checkpoint)
+                logger.info("VOP 融合权重: %.3f", config.orientation_fusion_weight)
+                logger.info("VOP top-k 假设数: %d", int(config.orientation_topk))
+        elif config.orientation_mode != "off":
+            logger.warning("当前仅 sparse 匹配路径支持 VOP；match_mode=%s 时会自动忽略 orientation_mode=%s", config.match_mode, config.orientation_mode)
     log_config(logger, config)
 
     #-----------------------------------------------------------------------------#
@@ -249,6 +261,10 @@ def eval_script(config):
             top10_log=False,
             with_match=config.with_match,
             match_mode=config.match_mode,
+            orientation_checkpoint=config.orientation_checkpoint,
+            orientation_mode=config.orientation_mode,
+            orientation_fusion_weight=config.orientation_fusion_weight,
+            orientation_topk=config.orientation_topk,
             logger=logger,
             rotate=config.rotate,
         )
@@ -276,11 +292,16 @@ def parse_args():
     match_group.add_argument('--dense', dest='match_mode', action='store_const', const='dense', help='Use dense matching in with_match step (original behavior)')
     match_group.add_argument('--sparse', dest='match_mode', action='store_const', const='sparse', help='Use sparse fast path in with_match step')
     parser.set_defaults(match_mode='sparse')
+    parser.add_argument('--orientation_checkpoint', type=str, default='', help='Checkpoint path for the visual orientation posterior head')
+    parser.add_argument('--orientation_mode', type=str, default='off', choices=('off', 'prior_single', 'prior_topk'), help='How to use the visual orientation posterior in GTA sparse fine localization')
+    parser.add_argument('--orientation_fusion_weight', type=float, default=0.5, help='Reserved for API parity; not used by prior_* modes')
+    parser.add_argument('--orientation_topk', type=int, default=1, help='Number of VOP angle hypotheses to evaluate when orientation_mode=prior_topk')
     parser.add_argument('--query_limit', type=int, default=0, help='Limit the number of queries for quick evaluation (0 for all)')
 
     parser.add_argument('--gpu_ids', type=parse_tuple, default=(0,1), help='GPU ID')
 
     parser.add_argument('--batch_size', type=int, default=40, help='Batch size')
+    parser.add_argument('--num_workers', type=int, default=None, help='Number of dataloader workers (default: use config default)')
 
     parser.add_argument('--checkpoint_start', type=str, default=None, help='Training from checkpoint')
 
@@ -306,6 +327,8 @@ if __name__ == '__main__':
     config.log_to_file = args.log_to_file
     config.log_path = args.log_path
     config.batch_size = args.batch_size
+    if args.num_workers is not None:
+        config.num_workers = int(args.num_workers)
     config.gpu_ids = args.gpu_ids
     config.checkpoint_start = args.checkpoint_start
     config.model = args.model
@@ -314,6 +337,10 @@ if __name__ == '__main__':
     config.query_mode = args.query_mode
     config.with_match = args.with_match
     config.match_mode = args.match_mode
+    config.orientation_checkpoint = args.orientation_checkpoint
+    config.orientation_mode = args.orientation_mode
+    config.orientation_fusion_weight = args.orientation_fusion_weight
+    config.orientation_topk = max(1, int(args.orientation_topk))
     config.query_limit = args.query_limit
     config.use_wandb = False # 强制关闭wandb
     config.use_yaw = args.use_yaw

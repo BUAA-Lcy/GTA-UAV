@@ -36,19 +36,19 @@ def parse_args():
     parser.add_argument("--ranking_margin", type=float, default=0.2)
     parser.add_argument("--ranking_gap_m", type=float, default=5.0)
     parser.add_argument("--ranking_gap_scale_m", type=float, default=20.0)
-    parser.add_argument("--ce_weight", type=float, default=0.5)
+    parser.add_argument("--ce_weight", type=float, default=1.0)
     parser.add_argument("--ce_gap_m", type=float, default=5.0)
     parser.add_argument("--ce_entropy_max", type=float, default=0.8)
     parser.add_argument("--filter_entropy_max", type=float, default=1.0)
     parser.add_argument("--filter_gap_m", type=float, default=0.0)
     parser.add_argument("--filter_best_distance_max", type=float, default=float("inf"))
     parser.add_argument("--partial_unfreeze", type=str, default="none", choices=("none", "last_block"))
-    parser.add_argument("--supervision_mode", type=str, default="posterior", choices=("posterior", "useful_bce"))
+    parser.add_argument("--supervision_mode", type=str, default="useful_bce", choices=("posterior", "useful_bce"))
     parser.add_argument("--useful_delta_m", type=float, default=5.0)
     parser.add_argument(
         "--pair_weight_mode",
         type=str,
-        default="uniform",
+        default="best_distance_sigmoid",
         choices=("uniform", "best_distance_sigmoid"),
     )
     parser.add_argument("--pair_weight_center_m", type=float, default=30.0)
@@ -538,6 +538,11 @@ def main():
         filter_gap_m=args.filter_gap_m,
         filter_best_distance_max=args.filter_best_distance_max,
     )
+    removed_records = len(records) - len(filtered_records)
+    print(
+        "Teacher filtering summary: "
+        f"raw_records={len(records)} kept_records={len(filtered_records)} removed_records={removed_records}"
+    )
     if not filtered_records:
         raise RuntimeError(
             "Teacher filtering removed all samples. "
@@ -570,6 +575,10 @@ def main():
     train_records = records[val_count:]
     if not train_records:
         train_records = val_records
+    print(
+        "Dataset split summary: "
+        f"train_records={len(train_records)} val_records={len(val_records)} total_records={len(records)}"
+    )
 
     backbone = DesModel(args.model, pretrained=True, img_size=args.img_size, share_weights=True)
     if args.checkpoint_start:
@@ -685,6 +694,8 @@ def main():
             "hidden_dim": int(args.hidden_dim),
             "candidate_angles_deg": candidate_angles,
             "rotate_step": float(teacher_cache["rotate_step"]),
+            "dataset": teacher_cache.get("dataset", ""),
+            "pairs_meta_file": teacher_cache.get("pairs_meta_file", ""),
             "model": args.model,
             "checkpoint_start": args.checkpoint_start,
             "img_size": int(args.img_size),
