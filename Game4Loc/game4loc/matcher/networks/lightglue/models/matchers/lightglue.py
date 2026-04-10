@@ -326,6 +326,13 @@ class LightGlue(nn.Module):
         },
     }
 
+    pruning_keypoint_thresholds = {
+        "cpu": -1,
+        "mps": -1,
+        "cuda": 1024,
+        "flash": 1536,
+    }
+
     required_data_keys = ["keypoints0", "keypoints1", "descriptors0", "descriptors1"]
 
     url = "https://github.com/cvg/LightGlue/releases/download/{}/{}.pth"
@@ -353,6 +360,14 @@ class LightGlue(nn.Module):
         self.token_confidence = nn.ModuleList(
             [TokenConfidence(d) for _ in range(n - 1)]
         )
+        self.register_buffer(
+            "confidence_thresholds",
+            torch.tensor(
+                [self.confidence_threshold(i) for i in range(int(self.conf.n_layers))],
+                dtype=torch.float32,
+            ),
+        )
+        self.static_lengths = None
 
         # self.loss_fn = NLLLoss(conf.loss)
 

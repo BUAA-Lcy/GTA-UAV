@@ -44,6 +44,9 @@ class Configuration:
     orientation_mode: str = "off"
     orientation_fusion_weight: float = 0.5
     orientation_topk: int = 1
+    save_match_vis: bool = False
+    match_vis_dir: str = ""
+    match_vis_max_save: int = 200
 
     # set num_workers to 0 if on Windows
     num_workers: int = 0 if os.name == 'nt' else 4 
@@ -101,6 +104,10 @@ def eval_script(config):
                 logger.info("VOP 权重路径: %s", config.orientation_checkpoint)
                 logger.info("VOP 融合权重: %.3f", config.orientation_fusion_weight)
                 logger.info("VOP top-k 假设数: %d", int(config.orientation_topk))
+            logger.info("匹配可视化导出: %s", "开启" if config.save_match_vis else "关闭")
+            if config.save_match_vis:
+                logger.info("匹配可视化目录: %s", config.match_vis_dir if str(config.match_vis_dir).strip() else "(默认 Log/visloc_sparse_final_matches)")
+                logger.info("匹配可视化最大保存数: %d", int(config.match_vis_max_save))
         elif config.orientation_mode != "off":
             logger.warning("当前仅 sparse 匹配路径支持 VOP；match_mode=%s 时会自动忽略 orientation_mode=%s", config.match_mode, config.orientation_mode)
     log_config(logger, config)
@@ -265,6 +272,9 @@ def eval_script(config):
             orientation_mode=config.orientation_mode,
             orientation_fusion_weight=config.orientation_fusion_weight,
             orientation_topk=config.orientation_topk,
+            save_match_vis=config.save_match_vis,
+            match_vis_dir=config.match_vis_dir,
+            match_vis_max_save=config.match_vis_max_save,
             logger=logger,
             rotate=config.rotate,
         )
@@ -296,6 +306,9 @@ def parse_args():
     parser.add_argument('--orientation_mode', type=str, default='off', choices=('off', 'prior_single', 'prior_topk'), help='How to use the visual orientation posterior in GTA sparse fine localization')
     parser.add_argument('--orientation_fusion_weight', type=float, default=0.5, help='Reserved for API parity; not used by prior_* modes')
     parser.add_argument('--orientation_topk', type=int, default=1, help='Number of VOP angle hypotheses to evaluate when orientation_mode=prior_topk')
+    parser.add_argument('--save_match_vis', action='store_true', help='Save sparse final match visualizations for each query')
+    parser.add_argument('--match_vis_dir', type=str, default='', help='Directory for sparse final match visualizations')
+    parser.add_argument('--match_vis_max_save', type=int, default=200, help='Maximum number of sparse final match visualizations to save')
     parser.add_argument('--query_limit', type=int, default=0, help='Limit the number of queries for quick evaluation (0 for all)')
 
     parser.add_argument('--gpu_ids', type=parse_tuple, default=(0,1), help='GPU ID')
@@ -341,6 +354,9 @@ if __name__ == '__main__':
     config.orientation_mode = args.orientation_mode
     config.orientation_fusion_weight = args.orientation_fusion_weight
     config.orientation_topk = max(1, int(args.orientation_topk))
+    config.save_match_vis = args.save_match_vis
+    config.match_vis_dir = args.match_vis_dir
+    config.match_vis_max_save = max(1, int(args.match_vis_max_save))
     config.query_limit = args.query_limit
     config.use_wandb = False # 强制关闭wandb
     config.use_yaw = args.use_yaw

@@ -34,14 +34,19 @@ The current working diagnosis is:
 As of this handoff:
 
 - Active branch: `codex/vop-experiment`
-- Current uncommitted code change exists in:
-  - `Game4Loc/train_vop.py`
-- That uncommitted change adds supervision-diagnosis support:
-  - `--filter_best_distance_max`
-  - `--pair_weight_mode`
-  - `--pair_weight_center_m`
-  - `--pair_weight_scale_m`
-  - weighted useful-angle BCE support via per-pair weights
+- Current uncommitted work exists in:
+  - `AGENTS.md`
+  - `Paper.md`
+  - `Game4Loc/scripts/run_gta_same_area_exp_c_followup.sh`
+- Those uncommitted additions now include:
+  - GTA same-area Exp C minimal follow-up automation
+  - updated research handoff notes
+  - a paper-writing guide focused on the current method line
+- Recent project capabilities already include:
+  - supervision-diagnosis support in `train_vop.py`
+  - GTA-UAV teacher-cache support in `build_vop_teacher.py`
+  - GTA-UAV sparse VOP evaluation support in `eval_gta.py`
+  - GTA-UAV sparse VOP inference integration in `game4loc/evaluate/gta.py`
 - Do not revert user or prior-agent work unless explicitly requested.
 
 Current research state:
@@ -71,6 +76,129 @@ Current research state:
      protocol for formal validation.
    - Keep `hard clean-pair filter` only as a diagnostic baseline.
 
+Current GTA-UAV migration status:
+
+1. **VOP teacher building now supports GTA-UAV.**
+   - `Game4Loc/build_vop_teacher.py` now accepts:
+     - `--dataset gta`
+   - GTA teacher distances are built in the dataset's planar `x/y` space using:
+     - query `drone_loc_x_y`
+     - gallery tile geometry from `game4loc.dataset.gta.sate2loc`
+
+2. **GTA-UAV sparse official evaluation now supports VOP priors.**
+   - `Game4Loc/eval_gta.py` now accepts:
+     - `--orientation_checkpoint`
+     - `--orientation_mode {off, prior_single, prior_topk}`
+     - `--orientation_topk`
+     - `--num_workers`
+   - `Game4Loc/game4loc/evaluate/gta.py` now supports:
+     - sparse `prior_single`
+     - sparse `prior_topk`
+
+3. **Current GTA-UAV priority path is sparse mode.**
+   - Prefer:
+     - `--with_match --sparse`
+   - The GTA VOP integration is currently wired only for:
+     - sparse fine localization
+   - Do **not** treat dense-mode GTA evaluation as the current mainline for VOP.
+
+4. **A same-area GTA smoke test already passed end-to-end.**
+   - It covered:
+     - GTA teacher cache build
+     - GTA VOP training
+     - GTA sparse `prior_topk=4` evaluation
+   - Smoke artifacts:
+     - `Game4Loc/work_dir/vop/gta_samearea_smoke_teacher.pt`
+     - `Game4Loc/work_dir/vop/gta_samearea_smoke_vop.pth`
+   - Important warning:
+     - these smoke artifacts are **pipeline-validation only**
+     - do **not** use their metrics as paper evidence
+
+5. **Current environment note for GTA evaluation.**
+   - On this machine, prefer:
+     - `--num_workers 0`
+   - Reason:
+     - GTA eval with multi-process dataloading may raise:
+       - `OSError: [Errno 95] Operation not supported`
+
+6. **GTA-UAV evaluator now reports full robustness summaries.**
+   - Current GTA official logs now include:
+     - `MA@3m / MA@5m / MA@10m / MA@20m`
+     - `fallback`
+     - `worse-than-coarse`
+     - `identity-H fallback`
+     - `out-of-bounds`
+     - `projection-invalid`
+     - `mean_retained_matches`
+     - `mean_inliers`
+     - `mean_inlier_ratio`
+     - `mean_vop_forward_time / mean_matcher_time / mean_total_time`
+   - This was added as logging / summary only.
+   - It does **not** change GTA evaluation semantics.
+
+7. **A fixed-subset GTA same-area supervision comparison has completed.**
+   - Protocol:
+     - same-area
+     - sparse
+     - full same-area test
+     - retrieval checkpoint fixed to GTA same-area official weight
+     - teacher subset fixed to `2000` effective queries
+     - `prior_topk=4`
+   - Run summary:
+     - `Game4Loc/work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/summary.md`
+   - Main result:
+     - baseline: `Dis@1 = 77.16m`
+     - Exp A current teacher: `70.27m`
+     - Exp B clean30: `69.42m`
+     - Exp C weighted useful-angle: `63.03m`
+
+8. **Current GTA default VOP training recipe is Exp C.**
+   - Use:
+     - `useful_bce`
+     - `useful_delta_m = 5`
+     - `ce_weight = 1.0`
+     - `pair_weight_mode = best_distance_sigmoid`
+     - `pair_weight_center_m = 30`
+     - `pair_weight_scale_m = 10`
+   - Keep Exp A / Exp B only as diagnostic baselines.
+
+9. **A minimal GTA same-area Exp C follow-up has completed.**
+   - Protocol fixed:
+     - same-area
+     - sparse
+     - full same-area test
+     - teacher subset fixed to `2000`
+     - `prior_topk=4`
+   - Run summary:
+     - `Game4Loc/work_dir/gta_exp_c_followup_runs/exp_c_followup_samearea_q2000_20260410/summary.md`
+   - Compared:
+     - baseline Exp C:
+       - `useful_delta_m = 5`
+       - `pair_weight_center_m = 30`
+     - Exp C1:
+       - `useful_delta_m = 3`
+     - Exp C2:
+       - `pair_weight_center_m = 20`
+   - Main result:
+     - baseline Exp C remains the current default to keep
+     - Exp C1 regresses more clearly
+     - Exp C2 slightly improves raw `Dis@1` but weakens robustness
+   - Practical conclusion:
+     - the current GTA same-area line should keep:
+       - `useful_delta_m = 5`
+       - `pair_weight_center_m = 30`
+     - if more GTA work is requested later, expand teacher subset before more
+       micro-sweeps on these two knobs
+
+10. **Current GTA `with_match` output behavior is log-only by default.**
+    - `eval_gta.py --with_match --sparse` writes the standard app log under:
+      - `Game4Loc/Log/...`
+    - It does **not** dump per-query match visualization files by default.
+    - Reason:
+      - `GimDKM(..., sparse_save_final_vis=False)`
+      - `SparseSpLgMatcher(..., save_final_matches=False)`
+    - There is currently no CLI flag in `eval_gta.py` to expose this behavior.
+
 
 # 3. Hard Constraints
 
@@ -97,6 +225,11 @@ Unless the user explicitly changes the scope, do **not**:
 - Current stable yaw convention:
   - when `--use_yaw` is enabled, the query UAV image is rotated by `-Phi1`
     against a north-up satellite image
+- GTA-UAV uses planar localization coordinates:
+  - query location:
+    - `drone_loc_x_y`
+  - gallery tile geometry:
+    - `game4loc.dataset.gta.sate2loc`
 - Current main VisLoc path:
   - `Game4Loc/eval_visloc.py`
   - `Game4Loc/game4loc/evaluate/visloc.py`
@@ -104,6 +237,23 @@ Unless the user explicitly changes the scope, do **not**:
   - `Game4Loc/game4loc/matcher/sparse_sp_lg.py`
   - `Game4Loc/game4loc/matcher/gim_dkm.py`
   - `scripts/prepare_dataset/visloc.py`
+- Current main GTA-UAV fine-localization path:
+  - `Game4Loc/eval_gta.py`
+  - `Game4Loc/game4loc/evaluate/gta.py`
+  - `Game4Loc/game4loc/dataset/gta.py`
+  - `Game4Loc/game4loc/matcher/sparse_sp_lg.py`
+  - `Game4Loc/game4loc/matcher/gim_dkm.py`
+  - `Game4Loc/build_vop_teacher.py`
+  - `Game4Loc/train_vop.py`
+
+Current GTA-UAV evaluator facts:
+
+- fine localization is currently applied on:
+  - `query_mode="D2S"`
+  - retrieved top-1 gallery only
+- current VOP integration in GTA-UAV is currently:
+  - sparse-only
+  - retrieval-top1-only
 
 If orientation handling changes, change it in evaluator / model / matcher layers,
 not by changing metadata semantics.
@@ -125,6 +275,8 @@ Execution rules:
   - `WANDB_MODE=disabled`
 - Keep commands copy-paste reproducible.
 - Do not mix interpreters across compared runs.
+- For GTA-UAV evaluation on the current machine, prefer:
+  - `--num_workers 0`
 
 
 # 6. Evaluation Taxonomy
@@ -136,6 +288,7 @@ This project now has **three different evaluation roles**. Do not mix them.
 Use:
 
 - `Game4Loc/eval_visloc.py`
+- `Game4Loc/eval_gta.py`
 
 Purpose:
 
@@ -145,6 +298,13 @@ Purpose:
 - fallback / worse-than-coarse / runtime
 
 This is the only source that should drive formal headline tables.
+
+Dataset mapping:
+
+- UAV-VisLoc:
+  - `Game4Loc/eval_visloc.py`
+- GTA-UAV:
+  - `Game4Loc/eval_gta.py`
 
 ## B. Cached evaluator
 
@@ -162,6 +322,13 @@ Purpose:
 
 Do **not** use cached numbers as headline paper results.
 
+Current limitation:
+
+- cached top-k analysis is currently wired for:
+  - UAV-VisLoc
+- it is **not yet** ported to:
+  - GTA-UAV
+
 ## C. Training supervision diagnosis
 
 Use:
@@ -176,6 +343,13 @@ Purpose:
 - compare useful-angle supervision schemes
 
 This is development analysis, not final benchmark reporting.
+
+Current support status:
+
+- `build_vop_teacher.py` now supports:
+  - UAV-VisLoc
+  - GTA-UAV
+- `train_vop.py` remains teacher-cache driven and is shared across both datasets
 
 
 # 7. Dataset Protocols And What They Mean
@@ -252,6 +426,44 @@ If a larger protocol is built, make sure:
 - positive label semantics stay strict
 - evaluation remains directly comparable
 - 03/04 results are labeled clearly as development-only
+
+## 7.4 GTA-UAV protocol status
+
+Current local GTA-UAV protocol files:
+
+- `data/GTA-UAV-data/same-area-drone2sate-train.json`
+- `data/GTA-UAV-data/same-area-drone2sate-test.json`
+- `data/GTA-UAV-data/cross-area-drone2sate-train.json`
+- `data/GTA-UAV-data/cross-area-drone2sate-test.json`
+
+Matched retrieval checkpoints:
+
+- same-area:
+  - `Game4Loc/pretrained/gta/vit_base_eva_gta_same_area.pth`
+- cross-area:
+  - `Game4Loc/pretrained/gta/vit_base_eva_gta_cross_area.pth`
+
+Current migration guidance:
+
+- use same-area first for:
+  - pipeline shakeout
+  - supervision debugging
+  - command validation
+- then compare matched GTA settings separately:
+  - same-area with same-area checkpoint
+  - cross-area with cross-area checkpoint
+
+Do **not**:
+
+- mix same-area JSON with cross-area checkpoint
+- mix cross-area JSON with same-area checkpoint
+- quote smoke-test GTA metrics as evidence
+
+Current smoke status:
+
+- same-area smoke with `query_limit=2` has already run end-to-end
+- this proves the GTA VOP path is wired
+- it does **not** prove method quality
 
 
 # 8. Current Method Line
@@ -416,6 +628,76 @@ Interpretation of that table:
   - Exp B = strong diagnostic baseline
   - Exp C = most paper-worthy supervision direction for the next larger test
 
+## 9.4 GTA same-area supervision comparison (`teacher_query_limit=2000`)
+
+This run is available at:
+
+- `Game4Loc/work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/summary.md`
+
+Official evaluator summary:
+
+| Variant | Dis@1 | MA@5 | MA@10 | MA@20 | fallback | worse-than-coarse | out-of-bounds |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| sparse baseline | 77.16 | 6.42 | 16.58 | 33.78 | 28.35% | 14.20% | 0.29% |
+| Exp A current teacher | 70.27 | 8.31 | 19.20 | 39.44 | 19.40% | 14.00% | 0.32% |
+| Exp B clean30 | 69.42 | 7.73 | 19.14 | 38.63 | 22.07% | 13.42% | 0.41% |
+| Exp C weighted useful-angle | 63.03 | 8.74 | 21.64 | 42.17 | 17.51% | 11.56% | 0.15% |
+
+Teacher-side training summary:
+
+| Variant | kept / raw | removed | pair weight mode | pair weight mean |
+|---|---:|---:|---|---:|
+| Exp A current teacher | 2000 / 2000 | 0 | uniform | 1.0000 |
+| Exp B clean30 | 1701 / 2000 | 299 | uniform | 1.0000 |
+| Exp C weighted useful-angle | 2000 / 2000 | 0 | best_distance_sigmoid | 0.7572 |
+
+Interpretation:
+
+- GTA same-area also shows meaningful teacher noise.
+- Exp B helps, so denoising matters.
+- But Exp C is the current best GTA supervision line because it improves both:
+  - raw `Dis@1`
+  - and the more important robustness metrics
+- Therefore the current GTA default should be:
+  - Exp C weighted useful-angle set supervision
+- If only one GTA supervision recipe is carried to larger teacher subsets or
+  cross-area later, carry:
+  - Exp C
+
+## 9.5 GTA same-area Exp C follow-up (`teacher_query_limit=2000`)
+
+This run is available at:
+
+- `Game4Loc/work_dir/gta_exp_c_followup_runs/exp_c_followup_samearea_q2000_20260410/summary.md`
+
+Official evaluator summary:
+
+| Variant | Dis@1 | MA@5 | MA@10 | MA@20 | fallback | worse-than-coarse | out-of-bounds |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Exp C baseline (`delta=5`, `center=30`) | 63.03 | 8.74 | 21.64 | 42.17 | 17.51% | 11.56% | 0.15% |
+| Exp C1 (`useful_delta_m=3`) | 63.82 | 8.74 | 20.94 | 42.23 | 16.67% | 12.69% | 0.17% |
+| Exp C2 (`pair_weight_center_m=20`) | 62.72 | 8.31 | 21.49 | 41.94 | 19.05% | 10.75% | 0.23% |
+
+Teacher-side summary:
+
+| Variant | useful-set mean | pair-weight mean | note |
+|---|---:|---:|---|
+| Exp C baseline (`delta=5`, `center=30`) | 3.7090 | 0.7572 | current default |
+| Exp C1 (`useful_delta_m=3`) | 2.8675 | 0.7572 | useful set became tighter |
+| Exp C2 (`pair_weight_center_m=20`) | 3.7090 | 0.6141 | weighting became stricter |
+
+Interpretation:
+
+- Exp C appears more sensitive to useful-angle set definition than to pair
+  weighting.
+- `useful_delta_m=3` is **not** better than `5` for GTA same-area.
+- `pair_weight_center_m=20` is **not** a more stable replacement for `30`.
+- Therefore keep the current GTA default as:
+  - `useful_delta_m = 5`
+  - `pair_weight_center_m = 30`
+- If GTA work continues later, expand teacher subset before continuing
+  micro-tuning on these two knobs.
+
 
 # 10. Key Metrics That Must Be Reported
 
@@ -451,6 +733,13 @@ For cached mechanism experiments, report:
 Use this for current comparable experiments:
 
 - `Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth`
+
+For GTA-UAV comparable experiments, use:
+
+- same-area:
+  - `Game4Loc/pretrained/gta/vit_base_eva_gta_same_area.pth`
+- cross-area:
+  - `Game4Loc/pretrained/gta/vit_base_eva_gta_cross_area.pth`
 
 Do not use for new matched runs unless explicitly necessary:
 
@@ -490,6 +779,15 @@ Current useful cached files:
 - `Game4Loc/work_dir/vop/supervision_diag_0409/useful5_weight30_k2.json`
 - `Game4Loc/work_dir/vop/supervision_diag_0409/useful5_weight30_k4.json`
 
+## 11.6 GTA-UAV smoke artifacts
+
+These exist only as linkage checks:
+
+- `Game4Loc/work_dir/vop/gta_samearea_smoke_teacher.pt`
+- `Game4Loc/work_dir/vop/gta_samearea_smoke_vop.pth`
+
+Do **not** use them for claims.
+
 
 # 12. File Map For The Current Fine-Localization Line
 
@@ -512,6 +810,12 @@ Orientation / training utilities:
 - `Game4Loc/analyze_topk_hypotheses.py`
 - `Game4Loc/analyze_vop.py`
 - `Game4Loc/train_confidence_verifier.py`
+
+GTA-UAV evaluation path:
+
+- `Game4Loc/eval_gta.py`
+- `Game4Loc/game4loc/evaluate/gta.py`
+- `Game4Loc/game4loc/dataset/gta.py`
 
 
 # 13. Reproducible Commands
@@ -654,6 +958,94 @@ WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_visloc.py \
   --topk 4 \
   --output_path ./work_dir/vop/supervision_diag_0409/useful5_weight30_k4.json
 ```
+
+## 13.5 GTA-UAV VOP migration
+
+Important runtime note:
+
+- prefer:
+  - `--num_workers 0`
+- prefer:
+  - `--with_match --sparse`
+
+Current GTA default training recipe:
+
+- Exp C weighted useful-angle set supervision
+
+### build GTA same-area teacher cache
+
+```bash
+WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python build_vop_teacher.py \
+  --dataset gta \
+  --data_root ./data/GTA-UAV-data \
+  --pairs_meta_file same-area-drone2sate-train.json \
+  --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
+  --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
+  --output_path ./work_dir/vop/gta_samearea_teacher.pt
+```
+
+### train GTA same-area weighted useful-angle VOP
+
+```bash
+/home/lcy/miniconda3/envs/gtauav/bin/python train_vop.py \
+  --teacher_cache ./work_dir/vop/gta_samearea_teacher.pt \
+  --output_path ./work_dir/vop/gta_samearea_useful5_weight30_e6.pth \
+  --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
+  --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
+  --batch_size 16 --num_workers 0 --epochs 6 \
+  --supervision_mode useful_bce \
+  --useful_delta_m 5 \
+  --ce_weight 1.0 \
+  --pair_weight_mode best_distance_sigmoid \
+  --pair_weight_center_m 30 \
+  --pair_weight_scale_m 10
+```
+
+Current one-click GTA same-area pipeline default:
+
+```bash
+./scripts/run_gta_same_area_vop_pipeline.sh
+```
+
+### GTA same-area sparse baseline without VOP
+
+```bash
+WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_gta.py \
+  --data_root ./data/GTA-UAV-data \
+  --test_pairs_meta_file same-area-drone2sate-test.json \
+  --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
+  --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
+  --with_match --sparse --num_workers 0
+```
+
+### GTA same-area sparse `prior_topk=4`
+
+```bash
+WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_gta.py \
+  --data_root ./data/GTA-UAV-data \
+  --test_pairs_meta_file same-area-drone2sate-test.json \
+  --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
+  --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
+  --with_match --sparse --num_workers 0 --batch_size 32 --gpu_ids 0 \
+  --orientation_checkpoint ./work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/artifacts/exp_c_useful5_weight30_e6.pth \
+  --orientation_mode prior_topk --orientation_topk 4
+```
+
+Current behavior note:
+
+- this command writes the standard evaluation log under:
+  - `Game4Loc/Log/...`
+- it does **not** write per-query match files by default
+
+### GTA cross-area switch
+
+To move the same pipeline to cross-area, switch both:
+
+- checkpoint:
+  - `./pretrained/gta/vit_base_eva_gta_cross_area.pth`
+- meta files:
+  - `cross-area-drone2sate-train.json`
+  - `cross-area-drone2sate-test.json`
 
 
 # 14. What The Next Agent Should Say In The Paper

@@ -21,10 +21,18 @@ class SparseSpLgMatcher:
         phase1_min_inliers=0,
         angle_score_inlier_offset=None,
         use_multi_scale=True,
+        scales=None,
+        multi_scale_mode="both",
+        allow_upsample=False,
+        cross_scale_dedup_radius=0.0,
+        lightglue_profile="current",
         save_final_matches=False,
+        save_final_matches_dir=None,
+        save_final_matches_max=200,
     ):
         # Stable sparse defaults selected from the controlled VisLoc yaw-aligned tuning.
-        scales = (1.0, 0.8, 0.6, 1.2)
+        if scales is None:
+            scales = (1.0, 0.8, 0.6, 1.2)
         ransac_method = "RANSAC"
         ransac_reproj_threshold = 20.0
         ransac_confidence = 0.99
@@ -34,7 +42,6 @@ class SparseSpLgMatcher:
         sp_nms_radius = 4
         sp_remove_borders = 4
         sp_max_edge = 1024
-        lg_filter_threshold = 0.0
         max_matches_per_scale = 1024
         max_total_matches = 4096
         min_inliers = 15
@@ -64,12 +71,26 @@ class SparseSpLgMatcher:
             "remove_borders": int(sp_remove_borders),
             "detection_threshold": float(sp_detection_threshold),
         }
-        lg_conf = {
-            "filter_threshold": float(lg_filter_threshold),
-            "flash": False,
-            "mp": False,
-            "checkpointed": False,
-        }
+        lightglue_profile_key = str(lightglue_profile).strip().lower()
+        if lightglue_profile_key == "official_default":
+            lg_conf = {
+                "filter_threshold": 0.1,
+                "flash": True,
+                "mp": False,
+                "depth_confidence": 0.95,
+                "width_confidence": 0.99,
+                "checkpointed": False,
+            }
+        else:
+            lightglue_profile_key = "current"
+            lg_conf = {
+                "filter_threshold": 0.0,
+                "flash": False,
+                "mp": False,
+                "depth_confidence": -1,
+                "width_confidence": -1,
+                "checkpointed": False,
+            }
         self.sp = SuperPoint(sp_conf).eval().to(device)
         self.lg = LightGlue(lg_conf).eval().to(device)
 
@@ -112,12 +133,19 @@ class SparseSpLgMatcher:
         self.sparse_ransac_confidence = float(ransac_confidence)
         self.sparse_ransac_max_iter = int(ransac_max_iter)
         self.sparse_sp_max_edge = int(sp_max_edge)
-        self.sparse_scales = tuple(float(v) for v in scales) if scales else (1.0,)
+        self.sparse_scales = self._normalize_scales(scales)
         self.sparse_max_matches_per_scale = int(max_matches_per_scale)
         self.sparse_max_total_matches = int(max_total_matches)
         self.sparse_phase1_min_inliers = max(0, int(phase1_min_inliers))
         self.sparse_angle_score_inlier_offset = None if angle_score_inlier_offset is None else float(angle_score_inlier_offset)
         self.sparse_use_multi_scale = bool(use_multi_scale)
+        self.sparse_allow_upsample = bool(allow_upsample)
+        multi_scale_mode_key = str(multi_scale_mode).strip().lower()
+        if multi_scale_mode_key not in {"both", "query_only", "gallery_only"}:
+            multi_scale_mode_key = "both"
+        self.sparse_multi_scale_mode = multi_scale_mode_key
+        self.sparse_cross_scale_dedup_radius = max(0.0, float(cross_scale_dedup_radius))
+        self.sparse_lightglue_profile = lightglue_profile_key
         self.sparse_min_inliers = int(min_inliers)
         self.sparse_min_inlier_ratio = float(min_inlier_ratio)
 
@@ -126,9 +154,13 @@ class SparseSpLgMatcher:
         self.sparse_vis_max_save = 200
         self.sparse_vis_saved = 0
         os.makedirs(self.sparse_vis_dir, exist_ok=True)
-        self.sparse_final_vis_dir = join(self.project_root, "Log", "visloc_sparse_final_matches")
+        self.sparse_final_vis_dir = (
+            str(save_final_matches_dir)
+            if save_final_matches_dir
+            else join(self.project_root, "Log", "visloc_sparse_final_matches")
+        )
         self.sparse_final_vis_enable = bool(save_final_matches)
-        self.sparse_final_vis_max_save = 200
+        self.sparse_final_vis_max_save = max(1, int(save_final_matches_max))
         self.sparse_final_vis_saved = 0
         if self.sparse_final_vis_enable:
             os.makedirs(self.sparse_final_vis_dir, exist_ok=True)
@@ -146,10 +178,68 @@ class SparseSpLgMatcher:
             "empty_kpts": 0,
             "sparse_low_match": 0,
             "inliers_list": [],
+            "scale_summary": {},
         }
         self.last_match_info = None
         self.last_angle_results = []
         self.last_final_vis_path = None
+
+    def _normalize_scales(self, scales):
+        normalized = []
+        seen = set()
+        for value in scales:
+            try:
+                scale = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(scale) or scale <= 0.0:
+                continue
+            scale = round(scale, 6)
+            if scale in seen:
+                continue
+            seen.add(scale)
+            normalized.append(scale)
+        if not normalized:
+            normalized = [1.0]
+        return tuple(normalized)
+
+    def _format_scale_label(self, q_scale, g_scale):
+        q_value = float(q_scale)
+        g_value = float(g_scale)
+        if abs(q_value - g_value) < 1e-6:
+            return f"s{q_value:.2f}"
+        return f"q{q_value:.2f}_g{g_value:.2f}"
+
+    def _accumulate_scale_summary(self, scale_stats):
+        if not scale_stats:
+            return
+        summary_dict = self.stats.setdefault("scale_summary", {})
+        for item in scale_stats:
+            label = str(item.get("label", "")).strip()
+            if not label:
+                continue
+            summary_entry = summary_dict.setdefault(
+                label,
+                {
+                    "label": label,
+                    "q_scale": float(item.get("q_scale", 0.0)),
+                    "g_scale": float(item.get("g_scale", 0.0)),
+                    "selected_queries": 0,
+                    "matched_queries": 0,
+                    "inlier_queries": 0,
+                    "retained_matches_total": 0,
+                    "inliers_total": 0,
+                },
+            )
+            summary_entry["selected_queries"] += 1
+            retained_matches = int(item.get("retained_matches", 0))
+            inliers = int(item.get("inliers", 0))
+            if retained_matches > 0:
+                summary_entry["matched_queries"] += 1
+            if inliers > 0:
+                summary_entry["inlier_queries"] += 1
+            summary_entry["retained_matches_total"] += retained_matches
+            summary_entry["inliers_total"] += inliers
 
     def _log(self, level, msg, *args):
         if self.logger is not None:
@@ -419,6 +509,62 @@ class SparseSpLgMatcher:
         pts_out = (affine_mat @ pts_h.T).T
         return pts_out.astype(np.float32)
 
+    def _build_scale_pairs(self, base_scale, max_scale):
+        base_scale = max(0.2, float(base_scale))
+        max_scale = max(base_scale, float(max_scale))
+        if not self.sparse_use_multi_scale:
+            return [(base_scale, base_scale)]
+
+        scale_pairs = []
+        for s in self.sparse_scales:
+            s_eff = max(0.2, min(max_scale, float(s) * base_scale))
+            if self.sparse_multi_scale_mode == "query_only":
+                pair = (s_eff, base_scale)
+            elif self.sparse_multi_scale_mode == "gallery_only":
+                pair = (base_scale, s_eff)
+            else:
+                pair = (s_eff, s_eff)
+            if not any(abs(pair[0] - x0) < 1e-3 and abs(pair[1] - x1) < 1e-3 for x0, x1 in scale_pairs):
+                scale_pairs.append(pair)
+        return scale_pairs if scale_pairs else [(base_scale, base_scale)]
+
+    def _dedup_cross_scale_matches(self, mk0, mk1, ms, scale_ids=None):
+        if (
+            mk0.shape[0] <= 1
+            or mk1.shape[0] != mk0.shape[0]
+            or ms.shape[0] != mk0.shape[0]
+            or self.sparse_cross_scale_dedup_radius <= 0.0
+        ):
+            if scale_ids is None:
+                return mk0, mk1, ms
+            return mk0, mk1, ms, scale_ids
+
+        radius_sq = float(self.sparse_cross_scale_dedup_radius) ** 2
+        order = np.argsort(-ms.astype(np.float32))
+        suppressed = np.zeros((mk0.shape[0],), dtype=bool)
+        keep_indices = []
+
+        for idx in order:
+            if suppressed[idx]:
+                continue
+            keep_indices.append(int(idx))
+            dq = mk0[:, 0] - mk0[idx, 0]
+            dq2 = dq * dq
+            dy = mk0[:, 1] - mk0[idx, 1]
+            qdist_sq = dq2 + dy * dy
+            dg = mk1[:, 0] - mk1[idx, 0]
+            dg2 = dg * dg
+            gy = mk1[:, 1] - mk1[idx, 1]
+            gdist_sq = dg2 + gy * gy
+            dup_mask = (qdist_sq <= radius_sq) & (gdist_sq <= radius_sq)
+            suppressed |= dup_mask
+            suppressed[idx] = True
+
+        keep_indices = np.asarray(keep_indices, dtype=np.int64)
+        if scale_ids is None:
+            return mk0[keep_indices], mk1[keep_indices], ms[keep_indices]
+        return mk0[keep_indices], mk1[keep_indices], ms[keep_indices], scale_ids[keep_indices]
+
     def _run_matching_for_angles(self, image0, image1, yaw0, yaw1, candidate_angles, reproj_threshold, run_name="搜索", ransac_method=None):
         """提取公共逻辑：针对一组候选角度进行匹配，并返回最优结果和日志。"""
         if ransac_method is None:
@@ -440,12 +586,11 @@ class SparseSpLgMatcher:
         h1_orig, w1_orig = img1_sp.shape[-2], img1_sp.shape[-1]
         max_edge = max(h0_orig, w0_orig, h1_orig, w1_orig)
         base_scale = float(self.sparse_sp_max_edge) / float(max_edge) if max_edge > self.sparse_sp_max_edge else 1.0
-        scales = []
-        source_scales = self.sparse_scales if self.sparse_use_multi_scale else (1.0,)
-        for s in source_scales:
-            s_eff = max(0.2, min(1.0, float(s) * base_scale))
-            if not any(abs(s_eff - x) < 1e-3 for x in scales):
-                scales.append(s_eff)
+        max_scale = 1.0
+        if self.sparse_allow_upsample and max_edge > 0:
+            max_scale = max(1.0, float(self.sparse_sp_max_edge) / float(max_edge))
+        scale_pairs = self._build_scale_pairs(base_scale, max_scale)
+        scale_labels = [self._format_scale_label(q_scale, g_scale) for q_scale, g_scale in scale_pairs]
 
         for search_angle in candidate_angles:
             try:
@@ -460,14 +605,24 @@ class SparseSpLgMatcher:
                 image1_vis_rot = self._rotate_image_tensor_for_vis(image1, rot_angle)
                 t_preproc += time.perf_counter() - t_preproc_s
 
-                mk0_buckets, mk1_buckets, ms_buckets = [], [], []
+                mk0_buckets, mk1_buckets, ms_buckets, scale_id_buckets = [], [], [], []
+                per_scale_stats = [
+                    {
+                        "label": scale_labels[scale_idx],
+                        "q_scale": float(q_scale),
+                        "g_scale": float(g_scale),
+                        "retained_matches": 0,
+                        "inliers": 0,
+                    }
+                    for scale_idx, (q_scale, g_scale) in enumerate(scale_pairs)
+                ]
 
-                for s_eff in scales:
+                for scale_idx, (q_scale, g_scale) in enumerate(scale_pairs):
                     t_preproc_s = time.perf_counter()
-                    h0_sp = max(16, int(round(h0_orig * s_eff)))
-                    w0_sp = max(16, int(round(w0_orig * s_eff)))
-                    h1_base = max(16, int(round(h1_orig * s_eff)))
-                    w1_base = max(16, int(round(w1_orig * s_eff)))
+                    h0_sp = max(16, int(round(h0_orig * q_scale)))
+                    w0_sp = max(16, int(round(w0_orig * q_scale)))
+                    h1_base = max(16, int(round(h1_orig * g_scale)))
+                    w1_base = max(16, int(round(w1_orig * g_scale)))
                     img0_s = img0_sp if (h0_sp == h0_orig and w0_sp == w0_orig) else F.resize(img0_sp, [h0_sp, w0_sp])
                     img1_base = img1_sp if (h1_base == h1_orig and w1_base == w1_orig) else F.resize(img1_sp, [h1_base, w1_base])
                     img1_s, inv_rot_m = self._rotate_image_with_angle(img1_base, rot_angle)
@@ -522,7 +677,7 @@ class SparseSpLgMatcher:
                     if mk1_i.ndim == 1: mk1_i = mk1_i.reshape(-1, 2)
                     mk0_i, mk1_i = mk0_i.astype(np.float32), mk1_i.astype(np.float32)
                     ms_i = ms_i.astype(np.float32) if isinstance(ms_i, np.ndarray) else np.ones((mk0_i.shape[0],), dtype=np.float32)
-                    
+
                     if ms_i.shape[0] != mk0_i.shape[0] or mk0_i.shape[0] == 0:
                         t_preproc += time.perf_counter() - t_preproc_s
                         continue
@@ -539,9 +694,11 @@ class SparseSpLgMatcher:
                         keep_idx = np.argsort(-ms_i)[: self.sparse_max_matches_per_scale]
                         mk0_i, mk1_i, ms_i = mk0_i[keep_idx], mk1_i[keep_idx], ms_i[keep_idx]
 
+                    per_scale_stats[scale_idx]["retained_matches"] = int(mk0_i.shape[0])
                     mk0_buckets.append(mk0_i)
                     mk1_buckets.append(mk1_i)
                     ms_buckets.append(ms_i)
+                    scale_id_buckets.append(np.full((mk0_i.shape[0],), scale_idx, dtype=np.int32))
                     t_preproc += time.perf_counter() - t_preproc_s
 
                 t_preproc_s = time.perf_counter()
@@ -549,13 +706,19 @@ class SparseSpLgMatcher:
                     mk0 = np.concatenate(mk0_buckets, axis=0)
                     mk1 = np.concatenate(mk1_buckets, axis=0)
                     ms = np.concatenate(ms_buckets, axis=0)
+                    scale_ids = np.concatenate(scale_id_buckets, axis=0)
+                    mk0, mk1, ms, scale_ids = self._dedup_cross_scale_matches(mk0, mk1, ms, scale_ids=scale_ids)
                     
                     if mk0.shape[0] > self.sparse_max_total_matches:
                         keep_idx = np.argsort(-ms)[: self.sparse_max_total_matches]
-                        mk0, mk1 = mk0[keep_idx], mk1[keep_idx]
+                        mk0, mk1, scale_ids = mk0[keep_idx], mk1[keep_idx], scale_ids[keep_idx]
+                    if scale_ids.shape[0] == mk0.shape[0]:
+                        for scale_idx in range(len(per_scale_stats)):
+                            per_scale_stats[scale_idx]["retained_matches"] = int(np.sum(scale_ids == scale_idx))
                 else:
                     mk0 = np.empty((0, 2), dtype=np.float32)
                     mk1 = np.empty((0, 2), dtype=np.float32)
+                    scale_ids = np.empty((0,), dtype=np.int32)
                 t_preproc += time.perf_counter() - t_preproc_s
 
                 H = np.eye(3)
@@ -572,6 +735,12 @@ class SparseSpLgMatcher:
                         H = H_cand
                         inliers = int(h_mask.sum()) if h_mask is not None else 0
                         inlier_ratio = float(inliers) / float(max(1, mk0.shape[0]))
+                        if h_mask is not None and scale_ids.shape[0] == mk0.shape[0]:
+                            h_mask_bool = np.asarray(h_mask).reshape(-1).astype(bool)
+                            for scale_idx in range(len(per_scale_stats)):
+                                scale_mask = scale_ids == scale_idx
+                                if np.any(scale_mask):
+                                    per_scale_stats[scale_idx]["inliers"] = int(np.sum(h_mask_bool[scale_mask]))
                 
                 rotation_search_logs.append(f"[{run_name} {search_angle:>5.1f}°: Kpts0={total_kpts0:>4d} | Matches={mk0.shape[0]:>4d} | Inliers={inliers:>3d} | Ratio={inlier_ratio:.3f}]")
                 angle_results.append(
@@ -594,7 +763,17 @@ class SparseSpLgMatcher:
                     best_stats = {
                         "preproc_s": t_preproc, "sp_detect_s": t_sp_detect, "lg_match_s": t_lg_match, "ransac_h_s": t_h,
                         "total_kpts0": total_kpts0, "n_kept": int(mk0.shape[0]), "mk0_shape": str(mk0.shape), "mk1_shape": str(mk1.shape),
-                        "h_mask": h_mask, "image1_vis_rot": image1_vis_rot, "mk0": mk0, "mk1": mk1
+                        "h_mask": h_mask, "image1_vis_rot": image1_vis_rot, "mk0": mk0, "mk1": mk1,
+                        "scale_stats": [
+                            {
+                                "label": str(item["label"]),
+                                "q_scale": float(item["q_scale"]),
+                                "g_scale": float(item["g_scale"]),
+                                "retained_matches": int(item["retained_matches"]),
+                                "inliers": int(item["inliers"]),
+                            }
+                            for item in per_scale_stats
+                        ],
                     }
 
             except Exception as e:
@@ -618,7 +797,7 @@ class SparseSpLgMatcher:
 
         return best_inliers, best_ratio, best_H, best_angle, best_stats, rotation_search_logs, angle_results
 
-    def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None):
+    def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         t_total = time.perf_counter()
         self.last_final_vis_path = None
         rotate_step_p1 = self._normalize_rotate_step(rotate)
@@ -689,6 +868,7 @@ class SparseSpLgMatcher:
                 "out_of_bounds": False,
                 "projection_invalid": False,
                 "final_vis_path": None,
+                "scale_stats": [],
             }
             return np.eye(3)
             
@@ -720,17 +900,21 @@ class SparseSpLgMatcher:
         final_reason = f"final_phase{selected_phase}"
         if b_stats["n_kept"] < 4 or inliers < self.sparse_min_inliers or inlier_ratio < self.sparse_min_inlier_ratio:
             final_reason += "_fallback"
-        self.last_final_vis_path = self._save_sparse_final_case(
-            image0,
-            image1,
-            b_stats["mk0"],
-            b_stats["mk1"],
-            final_reason,
-            b_stats["h_mask"],
-            image1_vis=b_stats["image1_vis_rot"],
-            yaw_angle=rot_angle,
-            case_name=case_name,
-        )
+        save_final_vis_enabled = self.sparse_final_vis_enable if save_final_vis is None else bool(save_final_vis)
+        if save_final_vis_enabled:
+            self.last_final_vis_path = self._save_sparse_final_case(
+                image0,
+                image1,
+                b_stats["mk0"],
+                b_stats["mk1"],
+                final_reason,
+                b_stats["h_mask"],
+                image1_vis=b_stats["image1_vis_rot"],
+                yaw_angle=rot_angle,
+                case_name=case_name,
+            )
+        else:
+            self.last_final_vis_path = None
         for angle_result in self.last_angle_results:
             angle_result["selected"] = (
                 int(angle_result.get("phase", 0)) == selected_phase
@@ -748,9 +932,24 @@ class SparseSpLgMatcher:
         self.stats["n_samples"] += int(b_stats["total_kpts0"])
         self.stats["n_kept"] += b_stats["n_kept"]
         self.stats["inliers_list"].append(inliers)
+        self._accumulate_scale_summary(b_stats.get("scale_stats", []))
         
         if search_log_str:
             self._log(logging.DEBUG, "Sparse两阶段搜索详情: %s => 最终选择Rot=%.1f°", search_log_str, float(rot_angle))
+        scale_stats = b_stats.get("scale_stats", [])
+        if scale_stats:
+            scale_log = " ; ".join(
+                "{}(q={:.2f},g={:.2f}): kept={} inliers={} share={:.3f}".format(
+                    str(item.get("label", "")),
+                    float(item.get("q_scale", 0.0)),
+                    float(item.get("g_scale", 0.0)),
+                    int(item.get("retained_matches", 0)),
+                    int(item.get("inliers", 0)),
+                    float(item.get("inliers", 0)) / float(max(inliers, 1)),
+                )
+                for item in scale_stats
+            )
+            self._log(logging.DEBUG, "Sparse尺度贡献: %s", scale_log)
             
         self._log(
             logging.DEBUG,
@@ -771,6 +970,16 @@ class SparseSpLgMatcher:
             "out_of_bounds": False,
             "projection_invalid": False,
             "final_vis_path": self.last_final_vis_path,
+            "scale_stats": [
+                {
+                    "label": str(item.get("label", "")),
+                    "q_scale": float(item.get("q_scale", 0.0)),
+                    "g_scale": float(item.get("g_scale", 0.0)),
+                    "retained_matches": int(item.get("retained_matches", 0)),
+                    "inliers": int(item.get("inliers", 0)),
+                }
+                for item in scale_stats
+            ],
         }
         return H
 
@@ -813,6 +1022,26 @@ class SparseSpLgMatcher:
                 (gt_20 / total_valid) * 100,
                 (gt_50 / total_valid) * 100
             )
+        scale_summary = self.stats.get("scale_summary", {})
+        if scale_summary:
+            total_inliers = float(sum(int(item.get("inliers_total", 0)) for item in scale_summary.values()))
+            for item in sorted(scale_summary.values(), key=lambda value: (-int(value.get("inliers_total", 0)), str(value.get("label", "")))):
+                selected_queries = max(int(item.get("selected_queries", 0)), 1)
+                inliers_total = int(item.get("inliers_total", 0))
+                retained_total = int(item.get("retained_matches_total", 0))
+                self._log(
+                    logging.INFO,
+                    "Sparse尺度贡献: label=%s q_scale=%.2f g_scale=%.2f selected_queries=%d matched_queries=%d inlier_queries=%d mean_retained_matches=%.2f mean_inliers=%.2f inlier_share=%.4f",
+                    str(item.get("label", "")),
+                    float(item.get("q_scale", 0.0)),
+                    float(item.get("g_scale", 0.0)),
+                    int(item.get("selected_queries", 0)),
+                    int(item.get("matched_queries", 0)),
+                    int(item.get("inlier_queries", 0)),
+                    float(retained_total) / float(selected_queries),
+                    float(inliers_total) / float(selected_queries),
+                    float(inliers_total) / float(max(total_inliers, 1.0)),
+                )
 
     def get_last_match_info(self):
         return self.last_match_info

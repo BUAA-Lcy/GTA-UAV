@@ -33,6 +33,21 @@ def parse_bool(value):
     raise argparse.ArgumentTypeError("Boolean value expected, for example True or False")
 
 
+def parse_float_list(value):
+    items = []
+    for token in str(value).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            items.append(float(token))
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("Float list expected, for example 1.0,0.8,0.6") from exc
+    if not items:
+        raise argparse.ArgumentTypeError("At least one scale value is required")
+    return tuple(items)
+
+
 def normalize_angle_deg(angle):
     return ((float(angle) + 180.0) % 360.0) - 180.0
 
@@ -84,6 +99,11 @@ class Configuration:
     use_yaw: bool = False
     sparse_angle_score_inlier_offset: int = 25
     multi_scale: bool = True
+    sparse_scales: tuple = (1.0, 0.8, 0.6, 1.2)
+    sparse_multi_scale_mode: str = "both"
+    sparse_allow_upsample: bool = False
+    sparse_cross_scale_dedup_radius: float = 0.0
+    sparse_lightglue_profile: str = "current"
     sparse_save_final_vis: bool = True
     angle_experiment: bool = False
     orientation_checkpoint: str = ""
@@ -172,7 +192,12 @@ def eval_script(config):
             if str(config.confidence_dump_path).strip():
                 logger.info("Confidence dump 输出路径: %s", config.confidence_dump_path)
             logger.info("VisLoc 稀疏多尺度匹配: %s", "开启" if config.multi_scale else "关闭")
-            logger.info("VisLoc 稀疏匹配使用内置稳定默认参数: phase2关闭, RANSAC=RANSAC, reproj=20, SP.det=0.003, SP.kpts=2048, SP.nms=4, scales=(1.0, 0.8, 0.6, 1.2)")
+            logger.info("VisLoc 稀疏尺度列表: %s", ",".join(f"{float(scale):.2f}" for scale in config.sparse_scales))
+            logger.info("VisLoc 稀疏多尺度缩放模式: %s", config.sparse_multi_scale_mode)
+            logger.info("VisLoc 稀疏允许上采样: %s", "开启" if config.sparse_allow_upsample else "关闭")
+            logger.info("VisLoc 稀疏跨尺度去重半径: %.2f px", float(config.sparse_cross_scale_dedup_radius))
+            logger.info("VisLoc 稀疏 LightGlue 配置档: %s", config.sparse_lightglue_profile)
+            logger.info("VisLoc 稀疏匹配使用内置稳定默认参数: phase2关闭, RANSAC=RANSAC, reproj=20, SP.det=0.003, SP.kpts=2048, SP.nms=4")
             logger.info(
                 "VisLoc 稀疏最终匹配可视化: %s (目录=%s, 最多=%d张)",
                 "开启" if config.sparse_save_final_vis else "关闭",
@@ -181,7 +206,7 @@ def eval_script(config):
             )
             logger.info("VisLoc 角度实验日志: %s", "开启" if config.angle_experiment else "关闭")
             if config.use_yaw and config.rotate <= 0:
-                logger.info("当前 rotate<=0，将不执行任何旋转，因此 yaw 先验不会生效")
+                logger.info("当前 rotate<=0，将执行 yaw-only 对齐，不再额外做旋转搜索")
     log_config(logger, config)
 
     wandb_run = None
@@ -349,6 +374,11 @@ def eval_script(config):
             rotate=config.rotate,
             sparse_angle_score_inlier_offset=config.sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=config.multi_scale,
+            sparse_scales=config.sparse_scales,
+            sparse_multi_scale_mode=config.sparse_multi_scale_mode,
+            sparse_allow_upsample=config.sparse_allow_upsample,
+            sparse_cross_scale_dedup_radius=config.sparse_cross_scale_dedup_radius,
+            sparse_lightglue_profile=config.sparse_lightglue_profile,
             sparse_save_final_vis=config.sparse_save_final_vis,
             angle_experiment=effective_angle_experiment,
             orientation_checkpoint=config.orientation_checkpoint,
@@ -391,6 +421,12 @@ def parse_args():
     parser.add_argument("--rotate", type=parse_rotate_step, nargs="?", const=90.0, default=0.0, help="Enable rotation search with an optional step in degrees. '--rotate' defaults to 90. In sparse mode phase 2 uses half of this value. Default is 0 when the flag is omitted, which disables all rotation.")
     parser.add_argument("--no_rotate", action="store_const", const=0.0, dest="rotate", help=argparse.SUPPRESS)
     parser.add_argument("--multi_scale", type=parse_bool, nargs="?", const=True, default=True, help="Enable sparse multi-scale matching. Default is True. Use '--multi_scale False' to disable.")
+    parser.add_argument("--sparse_scales", type=parse_float_list, default=(1.0, 0.8, 0.6, 1.2), help="Comma-separated scale multipliers for sparse matching, for example 1.0,0.8,0.6,1.2")
+    parser.add_argument("--sparse_multi_scale_mode", type=str, default="both", choices=("both", "query_only", "gallery_only"), help="How sparse multi-scale resizing is applied. Default is both.")
+    parser.add_argument("--sparse_allow_upsample", type=parse_bool, nargs="?", const=True, default=False, help="Allow sparse scales above 1.0 to enlarge the image up to the matcher max edge. Default is False.")
+    parser.add_argument("--sparse_cross_scale_dedup_radius", type=float, default=0.0, help="Greedy dedup radius in pixels after concatenating sparse matches across scales. Default is 0, which disables dedup.")
+    parser.add_argument("--sparse_lightglue_profile", type=str, default="current", choices=("current", "official_default"), help="Sparse LightGlue config profile. 'official_default' follows the current upstream LightGlue defaults.")
+    parser.add_argument("--sparse_save_final_vis", type=parse_bool, nargs="?", const=True, default=True, help="Save final sparse match visualizations. Default is True. Use '--sparse_save_final_vis False' to disable.")
     parser.add_argument("--angle_experiment", action="store_true", help="Log detailed per-angle sparse matching results for each VisLoc sample")
     parser.add_argument("--orientation_checkpoint", type=str, default="", help="Checkpoint path for the visual orientation posterior head")
     parser.add_argument("--orientation_mode", type=str, default="off", choices=("off", "single", "fusion", "prior_single", "prior_topk"), help="How to use the visual orientation posterior")
@@ -429,6 +465,12 @@ if __name__ == "__main__":
     config.use_yaw = args.use_yaw
     config.rotate = args.rotate
     config.multi_scale = args.multi_scale
+    config.sparse_scales = tuple(float(scale) for scale in args.sparse_scales)
+    config.sparse_multi_scale_mode = args.sparse_multi_scale_mode
+    config.sparse_allow_upsample = bool(args.sparse_allow_upsample)
+    config.sparse_cross_scale_dedup_radius = float(args.sparse_cross_scale_dedup_radius)
+    config.sparse_lightglue_profile = args.sparse_lightglue_profile
+    config.sparse_save_final_vis = bool(args.sparse_save_final_vis)
     config.angle_experiment = args.angle_experiment
     config.orientation_checkpoint = args.orientation_checkpoint
     config.orientation_mode = args.orientation_mode

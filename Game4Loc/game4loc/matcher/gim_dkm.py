@@ -329,7 +329,14 @@ class GimDKM:
             match_mode='sparse',
             sparse_angle_score_inlier_offset=None,
             sparse_use_multi_scale=True,
+            sparse_scales=None,
+            sparse_multi_scale_mode='both',
+            sparse_allow_upsample=False,
+            sparse_cross_scale_dedup_radius=0.0,
+            sparse_lightglue_profile='current',
             sparse_save_final_vis=False,
+            sparse_save_final_vis_dir=None,
+            sparse_save_final_vis_max=200,
         ):
         self.match_mode = str(match_mode).lower()
         if self.match_mode not in {"dense", "sparse"}:
@@ -358,7 +365,14 @@ class GimDKM:
                 logger=logger,
                 angle_score_inlier_offset=sparse_angle_score_inlier_offset,
                 use_multi_scale=sparse_use_multi_scale,
+                scales=sparse_scales,
+                multi_scale_mode=sparse_multi_scale_mode,
+                allow_upsample=sparse_allow_upsample,
+                cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
+                lightglue_profile=sparse_lightglue_profile,
                 save_final_matches=sparse_save_final_vis,
+                save_final_matches_dir=sparse_save_final_vis_dir,
+                save_final_matches_max=sparse_save_final_vis_max,
             )
         self.stats = {
             'mode': self.match_mode,
@@ -453,9 +467,17 @@ class GimDKM:
         pts_out = (affine_mat @ pts_h.T).T
         return pts_out.astype(np.float32)
 
-    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True, case_name=None):
+    def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         if self.match_mode == "sparse":
-            H = self.sparse_matcher.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate, case_name=case_name)
+            H = self.sparse_matcher.match(
+                image0,
+                image1,
+                yaw0=yaw0,
+                yaw1=yaw1,
+                rotate=rotate,
+                case_name=case_name,
+                save_final_vis=save_final_vis,
+            )
             if self.sparse_matcher is not None and self.sparse_matcher.last_match_info is not None:
                 self.last_match_info = dict(self.sparse_matcher.last_match_info)
             else:
@@ -683,7 +705,7 @@ class GimDKM:
     def get_last_angle_results(self):
         return self.last_angle_results
     
-    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True, case_name=None):
+    def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         t0 = time.perf_counter()
         image0 = image0.to(self.device)
         image1 = image1.to(self.device)
@@ -695,7 +717,15 @@ class GimDKM:
         image0 = image0 * 0.5 + 0.5
         image1 = image1 * 0.5 + 0.5
 
-        H = self.match(image0, image1, yaw0=yaw0, yaw1=yaw1, rotate=rotate, case_name=case_name)
+        H = self.match(
+            image0,
+            image1,
+            yaw0=yaw0,
+            yaw1=yaw1,
+            rotate=rotate,
+            case_name=case_name,
+            save_final_vis=save_final_vis,
+        )
         if self.last_match_info is None:
             self.last_match_info = {
                 "match_mode": self.match_mode,

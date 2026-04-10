@@ -13,7 +13,7 @@ from sklearn.metrics import average_precision_score
 from geopy.distance import geodesic
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import pickle
 import os
 
@@ -116,6 +116,44 @@ def _format_count_ratio(count, total):
     return int(count), float(count) * 100.0 / float(total)
 
 
+def _annotate_match_visual(vis_path, text_lines, logger=None):
+    if not vis_path or not os.path.isfile(vis_path):
+        return
+    try:
+        image = Image.open(vis_path).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.load_default()
+
+        lines = [str(line) for line in text_lines if str(line).strip()]
+        if not lines:
+            return
+
+        left = 8
+        top = 8
+        pad_x = 8
+        pad_y = 6
+        line_gap = 4
+        text_width = 0
+        text_heights = []
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = max(text_width, int(bbox[2] - bbox[0]))
+            text_heights.append(int(bbox[3] - bbox[1]))
+        box_w = text_width + 2 * pad_x
+        box_h = sum(text_heights) + max(0, len(text_heights) - 1) * line_gap + 2 * pad_y
+        draw.rectangle((left, top, left + box_w, top + box_h), fill=(0, 0, 0))
+
+        cursor_y = top + pad_y
+        for line, line_h in zip(lines, text_heights):
+            draw.text((left + pad_x, cursor_y), line, fill=(255, 255, 0), font=font)
+            cursor_y += line_h + line_gap
+
+        image.save(vis_path)
+    except Exception as exc:
+        if logger is not None:
+            logger.debug("匹配可视化标注失败: path=%s err=%s", vis_path, str(exc))
+
+
 def predict(train_config, model, dataloader):
     
     model.eval()
@@ -181,6 +219,9 @@ def evaluate(
         orientation_mode="off",
         orientation_fusion_weight=0.5,
         orientation_topk=1,
+        save_match_vis=False,
+        match_vis_dir="",
+        match_vis_max_save=200,
         logger=None,
         rotate=True,
         epoch=None):
@@ -215,7 +256,14 @@ def evaluate(
 
     # with image match for finer loc
     if with_match:
-        matcher = GimDKM(device=config.device, logger=logger, match_mode=match_mode)
+        matcher = GimDKM(
+            device=config.device,
+            logger=logger,
+            match_mode=match_mode,
+            sparse_save_final_vis=bool(save_match_vis),
+            sparse_save_final_vis_dir=(match_vis_dir if str(match_vis_dir).strip() else None),
+            sparse_save_final_vis_max=int(match_vis_max_save),
+        )
         gallery_img_cache = OrderedDict()
         gallery_img_cache_size = 512
     orientation_mode_key = str(orientation_mode).lower()
@@ -335,6 +383,11 @@ def evaluate(
     t_metrics = time.perf_counter()
     progress_interval = max(1, query_num // 10)
     for i in tqdm(range(query_num), desc="Processing each query"):
+        query_name = str(query_list[i])
+        query_case_prefix = f"q{i+1:04d}_of_{query_num:04d}_{os.path.splitext(os.path.basename(query_name))[0]}"
+        if logger is not None and with_match:
+            logger.debug("=" * 100)
+            logger.debug("Query[%d/%d] 开始: %s", i + 1, query_num, query_name)
         score = all_scores[i]    
         # predict index
         index = np.argsort(score)[::-1]
@@ -391,7 +444,7 @@ def evaluate(
                     yaw0=None,
                     yaw1=None,
                     rotate=0.0,
-                    case_name=f"{query_list[i]}_vop_prior_single",
+                    case_name=f"{query_case_prefix}_vop_prior_single",
                 )
                 query_match_time = time.perf_counter() - t_match
                 orientation_stats["match_time_sum"] += query_match_time
@@ -416,6 +469,7 @@ def evaluate(
                 best_match_info = None
                 best_match_inliers = -1
                 best_match_ratio = -1.0
+                best_cand_angle = None
                 total_topk_match_time = 0.0
                 for rank_j, cand_index in enumerate(sorted_indices):
                     cand_angle = float(candidate_angles[int(cand_index)])
@@ -429,7 +483,8 @@ def evaluate(
                         yaw0=None,
                         yaw1=None,
                         rotate=0.0,
-                        case_name=f"{query_list[i]}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                        case_name=f"{query_case_prefix}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                        save_final_vis=False,
                     )
                     total_topk_match_time += time.perf_counter() - t_match
                     candidate_match_info = matcher.get_last_match_info() or {}
@@ -441,8 +496,24 @@ def evaluate(
                         best_match_info = dict(candidate_match_info)
                         best_match_inliers = cand_inliers
                         best_match_ratio = cand_ratio
-                match_loc = best_match_loc
-                match_info = best_match_info
+                        best_cand_angle = cand_angle
+                if save_match_vis and best_cand_angle is not None:
+                    rotated_query_img = _rotate_query_tensor(query_img, best_cand_angle)
+                    match_loc = matcher.est_center(
+                        gallery_img,
+                        rotated_query_img,
+                        gallery_center_loc_xy_list[top1_index],
+                        gallery_topleft_loc_xy_list[top1_index],
+                        yaw0=None,
+                        yaw1=None,
+                        rotate=0.0,
+                        case_name=f"{query_case_prefix}_vop_prior_top{topk}_selected_{best_cand_angle:.1f}",
+                        save_final_vis=True,
+                    )
+                    match_info = matcher.get_last_match_info() or {}
+                else:
+                    match_loc = best_match_loc
+                    match_info = best_match_info
                 query_match_time = total_topk_match_time
                 orientation_stats["match_time_sum"] += query_match_time
                 hypotheses_evaluated = topk
@@ -456,6 +527,8 @@ def evaluate(
                     yaw0=sparse_yaw0,
                     yaw1=sparse_yaw1,
                     rotate=rotate,
+                    case_name=f"{query_case_prefix}_baseline_sparse",
+                    save_final_vis=save_match_vis,
                 )
                 query_match_time = time.perf_counter() - t_match
 
@@ -484,6 +557,20 @@ def evaluate(
                 dis_match = get_dis_target(query_center_loc_xy_list[i], match_loc)
 
             match_info_dict = match_info if isinstance(match_info, dict) else {}
+            vis_path = match_info_dict.get("final_vis_path")
+            if vis_path:
+                _annotate_match_visual(
+                    vis_path,
+                    [
+                        f"Query {i + 1}/{query_num}",
+                        f"Query: {os.path.basename(query_name)}",
+                        f"Top1: {os.path.basename(str(gallery_list[top1_index]))}",
+                        f"Coarse Dis: {dis_ori:.2f} m",
+                        f"Matched Dis: {dis_match:.2f} m",
+                        f"Fallback: {'yes' if is_fallback else 'no'}",
+                    ],
+                    logger=logger,
+                )
             final_match_stats["query_count"] += 1
             final_match_stats["vop_forward_time_sum"] += float(query_vop_time)
             final_match_stats["matcher_time_sum"] += float(query_match_time)
@@ -506,8 +593,17 @@ def evaluate(
         if logger is not None and with_match:
             fallback_str = " (回退粗检索)" if is_fallback else ""
             logger.debug(
-                "样本匹配详情: Query=%s | Top1Gallery=%s | 检索Dis=%.2fm | 匹配后Dis=%.2fm%s\n",
-                query_list[i], gallery_list[top1_index], dis_ori, dis_match, fallback_str
+                "Query[%d/%d] 结果: Query=%s | Top1Gallery=%s | 检索Dis=%.2fm | 匹配后Dis=%.2fm%s | retained=%s | inliers=%s | final_vis=%s",
+                i + 1,
+                query_num,
+                query_name,
+                gallery_list[top1_index],
+                dis_ori,
+                dis_match,
+                fallback_str,
+                str(match_info_dict.get("n_kept", "NA")),
+                str(match_info_dict.get("inliers", "NA")),
+                str(match_info_dict.get("final_vis_path", "")),
             )
             
         sdm_list.append(sdm(query_center_loc_xy_list[i], sdmk_list, index, gallery_center_loc_xy_list))

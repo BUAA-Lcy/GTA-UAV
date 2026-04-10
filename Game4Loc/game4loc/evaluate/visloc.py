@@ -289,6 +289,11 @@ def evaluate(
         rotate=True,
         sparse_angle_score_inlier_offset=None,
         sparse_use_multi_scale=True,
+        sparse_scales=None,
+        sparse_multi_scale_mode="both",
+        sparse_allow_upsample=False,
+        sparse_cross_scale_dedup_radius=0.0,
+        sparse_lightglue_profile="current",
         sparse_save_final_vis=False,
         angle_experiment=False,
         orientation_checkpoint="",
@@ -307,8 +312,8 @@ def evaluate(
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
         logger.debug(
-            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_save_final_vis=%s, angle_experiment=%s",
-            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_save_final_vis, angle_experiment,
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_scales=%s, sparse_multi_scale_mode=%s, sparse_allow_upsample=%s, sparse_cross_scale_dedup_radius=%.2f, sparse_lightglue_profile=%s, sparse_save_final_vis=%s, angle_experiment=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_scales, sparse_multi_scale_mode, sparse_allow_upsample, float(sparse_cross_scale_dedup_radius), sparse_lightglue_profile, sparse_save_final_vis, angle_experiment,
         )
     else:
         print("Extract Features and Compute Scores:")
@@ -344,6 +349,11 @@ def evaluate(
             logger=logger,
             sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=sparse_use_multi_scale,
+            sparse_scales=sparse_scales,
+            sparse_multi_scale_mode=sparse_multi_scale_mode,
+            sparse_allow_upsample=sparse_allow_upsample,
+            sparse_cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
+            sparse_lightglue_profile=sparse_lightglue_profile,
             sparse_save_final_vis=sparse_save_final_vis,
         )
     orientation_mode_key = str(orientation_mode).lower()
@@ -858,6 +868,22 @@ def evaluate(
                 inliers_str,
                 float(dis_list[i][0]),
             )
+            if isinstance(match_info, dict):
+                scale_stats = match_info.get("scale_stats", [])
+                if scale_stats:
+                    logger.debug(
+                        "样本尺度贡献: %s",
+                        " ; ".join(
+                            "{}(q={:.2f},g={:.2f}): kept={} inliers={}".format(
+                                str(item.get("label", "")),
+                                float(item.get("q_scale", 0.0)),
+                                float(item.get("g_scale", 0.0)),
+                                int(item.get("retained_matches", 0)),
+                                int(item.get("inliers", 0)),
+                            )
+                            for item in scale_stats
+                        ),
+                    )
 
         top10_list.append(get_top10(index, gallery_list))
         loc1_lat, loc1_lon = gallery_center_loc_xy_list[index[0]]
