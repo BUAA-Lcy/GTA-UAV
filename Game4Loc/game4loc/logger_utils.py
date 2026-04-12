@@ -50,8 +50,13 @@ def setup_logger(
     logger_name: str = "game4loc",
     run_type: str | None = None,
     dataset_name: str | None = None,
+    log_file_path: str | None = None,
 ) -> tuple[logging.Logger, str]:
-    log_file = _build_log_file_path(algorithm_name, run_type=run_type, dataset_name=dataset_name)
+    if log_file_path:
+        log_file = Path(log_file_path).expanduser().resolve()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        log_file = _build_log_file_path(algorithm_name, run_type=run_type, dataset_name=dataset_name)
     logger = logging.getLogger(logger_name)
     logger.setLevel(log_level)
     logger.propagate = False

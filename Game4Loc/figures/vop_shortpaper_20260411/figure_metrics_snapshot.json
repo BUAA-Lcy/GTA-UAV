@@ -1,0 +1,196 @@
+{
+  "03/04": {
+    "sparse + rotate90 + inlier-count": {
+      "dis1_m": 59.47,
+      "ma3_pct": 0.0,
+      "ma5_pct": 0.0,
+      "ma10_pct": 1.72,
+      "ma20_pct": 24.14,
+      "fallback_pct": 17.24,
+      "worse_pct": 53.45,
+      "mean_inliers": 37.2,
+      "mean_total_s": 0.2942
+    },
+    "current teacher, top-2": {
+      "dis1_m": 58.55,
+      "ma3_pct": 0.86,
+      "ma5_pct": 0.86,
+      "ma10_pct": 5.17,
+      "ma20_pct": 29.31,
+      "fallback_pct": 19.83,
+      "worse_pct": 53.45,
+      "mean_inliers": 36.1,
+      "mean_total_s": 0.2044
+    },
+    "current teacher, top-4": {
+      "dis1_m": 49.14,
+      "ma3_pct": 1.72,
+      "ma5_pct": 2.59,
+      "ma10_pct": 6.03,
+      "ma20_pct": 31.03,
+      "fallback_pct": 18.1,
+      "worse_pct": 43.97,
+      "mean_inliers": 42.4,
+      "mean_total_s": 0.325
+    },
+    "clean30, top-4": {
+      "dis1_m": 35.51,
+      "ma3_pct": 2.59,
+      "ma5_pct": 4.31,
+      "ma10_pct": 6.9,
+      "ma20_pct": 30.17,
+      "fallback_pct": 23.28,
+      "worse_pct": 44.83,
+      "mean_inliers": 39.2,
+      "mean_total_s": 0.3427
+    },
+    "useful5-weight30, top-4 (ours)": {
+      "dis1_m": 38.86,
+      "ma3_pct": 0.86,
+      "ma5_pct": 2.59,
+      "ma10_pct": 8.62,
+      "ma20_pct": 37.93,
+      "fallback_pct": 11.21,
+      "worse_pct": 40.52,
+      "mean_inliers": 43.2,
+      "mean_total_s": 0.3408
+    },
+    "dense DKM, no rotate": {
+      "dis1_m": 32.45,
+      "ma3_pct": 2.59,
+      "ma5_pct": 4.31,
+      "ma10_pct": 13.79,
+      "ma20_pct": 49.14,
+      "fallback_pct": 1.72,
+      "worse_pct": 25.86,
+      "mean_inliers": 4202.6,
+      "mean_total_s": 11.5241
+    }
+  },
+  "GTA same-area": {
+    "dense DKM": {
+      "recall1_pct": 91.11,
+      "recall5_pct": 99.39,
+      "recall10_pct": 99.54,
+      "map_pct": 94.81,
+      "dis1_m": 50.11,
+      "ma20_pct": 54.81,
+      "fallback_pct": 1.57,
+      "worse_pct": 12.0,
+      "mean_total_s": 4.041
+    },
+    "sparse": {
+      "dis1_m": 108.47,
+      "dis3_m": 165.2042,
+      "dis5_m": 216.936,
+      "ma3_pct": 0.6099,
+      "ma5_pct": 1.8588,
+      "ma10_pct": 5.6056,
+      "ma20_pct": 14.61,
+      "fallback_pct": 58.41,
+      "worse_pct": 18.47,
+      "mean_inliers": 7.57,
+      "mean_total_s": 0.0651,
+      "mean_vop_s": null,
+      "recall1_pct": 91.11,
+      "recall5_pct": 99.39,
+      "recall10_pct": 99.54,
+      "map_pct": 94.81
+    },
+    "sparse + rotate90 + inlier-count": {
+      "dis1_m": 77.5,
+      "dis3_m": 165.2042,
+      "dis5_m": 216.936,
+      "ma3_pct": 3.2239,
+      "ma5_pct": 8.0744,
+      "ma10_pct": 19.0241,
+      "ma20_pct": 36.45,
+      "fallback_pct": 11.97,
+      "worse_pct": 21.49,
+      "mean_inliers": 21.05,
+      "mean_total_s": 0.2831,
+      "mean_vop_s": null,
+      "recall1_pct": 91.11,
+      "recall5_pct": 99.39,
+      "recall10_pct": 99.54,
+      "map_pct": 94.81
+    },
+    "sparse + VOP": {
+      "dis1_m": 52.59,
+      "dis3_m": 165.2042,
+      "dis5_m": 216.936,
+      "ma3_pct": 3.7758,
+      "ma5_pct": 8.3358,
+      "ma10_pct": 22.19,
+      "ma20_pct": 43.54,
+      "fallback_pct": 12.02,
+      "worse_pct": 13.3,
+      "mean_inliers": 20.18,
+      "mean_total_s": 0.3044,
+      "mean_vop_s": 0.040566,
+      "recall1_pct": 91.11,
+      "recall5_pct": 99.39,
+      "recall10_pct": 99.54,
+      "map_pct": 94.81
+    },
+    "LoFTR": {
+      "dis1_m": 130.6629,
+      "dis3_m": 165.2042,
+      "dis5_m": 216.936,
+      "ma3_pct": 1.1037,
+      "ma5_pct": 2.9625,
+      "ma10_pct": 7.7258,
+      "ma20_pct": 16.9329,
+      "fallback_pct": 4.01,
+      "worse_pct": 54.98,
+      "mean_inliers": 49.9,
+      "mean_total_s": 0.697233
+    }
+  },
+  "supervision": {
+    "current teacher, top-2": {
+      "dis1_m": 58.55,
+      "ma3_pct": 0.86,
+      "ma5_pct": 0.86,
+      "ma10_pct": 5.17,
+      "ma20_pct": 29.31,
+      "fallback_pct": 19.83,
+      "worse_pct": 53.45,
+      "mean_inliers": 36.1,
+      "mean_total_s": 0.2044
+    },
+    "current teacher, top-4": {
+      "dis1_m": 49.14,
+      "ma3_pct": 1.72,
+      "ma5_pct": 2.59,
+      "ma10_pct": 6.03,
+      "ma20_pct": 31.03,
+      "fallback_pct": 18.1,
+      "worse_pct": 43.97,
+      "mean_inliers": 42.4,
+      "mean_total_s": 0.325
+    },
+    "clean30, top-4": {
+      "dis1_m": 35.51,
+      "ma3_pct": 2.59,
+      "ma5_pct": 4.31,
+      "ma10_pct": 6.9,
+      "ma20_pct": 30.17,
+      "fallback_pct": 23.28,
+      "worse_pct": 44.83,
+      "mean_inliers": 39.2,
+      "mean_total_s": 0.3427
+    },
+    "useful5-weight30, top-4 (ours)": {
+      "dis1_m": 38.86,
+      "ma3_pct": 0.86,
+      "ma5_pct": 2.59,
+      "ma10_pct": 8.62,
+      "ma20_pct": 37.93,
+      "fallback_pct": 11.21,
+      "worse_pct": 40.52,
+      "mean_inliers": 43.2,
+      "mean_total_s": 0.3408
+    }
+  }
+}

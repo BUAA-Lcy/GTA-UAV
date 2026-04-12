@@ -16,9 +16,6 @@ import time
 
 from os.path import join
 from .tools import get_padding_size
-from .networks.loftr.loftr import LoFTR
-from .networks.loftr.misc import lower_config
-from .networks.loftr.config import get_cfg_defaults
 from .networks.dkm.models.model_zoo.DKMv3 import DKMv3
 from .sparse_sp_lg import SparseSpLgMatcher
 
@@ -334,28 +331,46 @@ class GimDKM:
             sparse_allow_upsample=False,
             sparse_cross_scale_dedup_radius=0.0,
             sparse_lightglue_profile='current',
+            sparse_sp_detection_threshold=0.0003,
+            sparse_sp_max_num_keypoints=4096,
+            sparse_sp_nms_radius=4,
+            sparse_ransac_method='RANSAC',
+            sparse_ransac_reproj_threshold=20.0,
+            sparse_min_inliers=15,
+            sparse_min_inlier_ratio=0.001,
             sparse_save_final_vis=False,
             sparse_save_final_vis_dir=None,
             sparse_save_final_vis_max=200,
         ):
         self.match_mode = str(match_mode).lower()
-        if self.match_mode not in {"dense", "sparse"}:
+        if self.match_mode not in {"dense", "sparse", "loftr"}:
             self.match_mode = "sparse"
+        self.model = None
+        self.loftr_matcher = None
+        self.loftr_device = None
+        if self.match_mode == "dense":
+            ckpt = 'gim_dkm_100h.ckpt'
+            self.model = DKMv3(weights=None, h=672, w=896)
+            checkpoints_path = join('pretrained', 'gim', ckpt)
 
-        ckpt = 'gim_dkm_100h.ckpt'
-        self.model = DKMv3(weights=None, h=672, w=896)
-        checkpoints_path = join('pretrained', 'gim', ckpt)
-
-        # load state dict
-        state_dict = torch.load(checkpoints_path, map_location='cpu')
-        if 'state_dict' in state_dict.keys(): state_dict = state_dict['state_dict']
-        for k in list(state_dict.keys()):
-            if k.startswith('model.'):
-                state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
-            if 'encoder.net.fc' in k:
-                state_dict.pop(k)
-        self.model.load_state_dict(state_dict)
-        self.model = self.model.eval().to(device)
+            # load state dict
+            state_dict = torch.load(checkpoints_path, map_location='cpu')
+            if 'state_dict' in state_dict.keys():
+                state_dict = state_dict['state_dict']
+            for k in list(state_dict.keys()):
+                if k.startswith('model.'):
+                    state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
+                if 'encoder.net.fc' in k:
+                    state_dict.pop(k)
+            self.model.load_state_dict(state_dict)
+            self.model = self.model.eval().to(device)
+        elif self.match_mode == "loftr":
+            try:
+                import kornia.feature as KF
+            except ImportError as exc:
+                raise ImportError("LoFTR matcher requires kornia to be installed in the current environment.") from exc
+            self.loftr_device = torch.device("cpu")
+            self.loftr_matcher = KF.LoFTR(pretrained='outdoor').eval().to(self.loftr_device)
         self.device = device
         self.logger = logger
         self.sparse_matcher = None
@@ -370,6 +385,13 @@ class GimDKM:
                 allow_upsample=sparse_allow_upsample,
                 cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
                 lightglue_profile=sparse_lightglue_profile,
+                sp_detection_threshold=sparse_sp_detection_threshold,
+                sp_max_num_keypoints=sparse_sp_max_num_keypoints,
+                sp_nms_radius=sparse_sp_nms_radius,
+                ransac_method=sparse_ransac_method,
+                ransac_reproj_threshold=sparse_ransac_reproj_threshold,
+                min_inliers=sparse_min_inliers,
+                min_inlier_ratio=sparse_min_inlier_ratio,
                 save_final_matches=sparse_save_final_vis,
                 save_final_matches_dir=sparse_save_final_vis_dir,
                 save_final_matches_max=sparse_save_final_vis_max,
@@ -467,6 +489,97 @@ class GimDKM:
         pts_out = (affine_mat @ pts_h.T).T
         return pts_out.astype(np.float32)
 
+    def _to_grayscale(self, image_tensor):
+        if image_tensor.shape[1] == 1:
+            return image_tensor
+        weights = image_tensor.new_tensor([0.2989, 0.5870, 0.1140]).view(1, 3, 1, 1)
+        return (image_tensor[:, :3] * weights).sum(dim=1, keepdim=True)
+
+    def _pad_to_multiple(self, image_tensor, multiple=8):
+        height, width = image_tensor.shape[-2:]
+        pad_h = (multiple - (height % multiple)) % multiple
+        pad_w = (multiple - (width % multiple)) % multiple
+        if pad_h == 0 and pad_w == 0:
+            return image_tensor, {"orig_h": height, "orig_w": width, "pad_bottom": 0, "pad_right": 0}
+        padded = torch.nn.functional.pad(image_tensor, (0, pad_w, 0, pad_h))
+        return padded, {"orig_h": height, "orig_w": width, "pad_bottom": pad_h, "pad_right": pad_w}
+
+    def _match_loftr_once(self, image0, image1):
+        t0 = time.perf_counter()
+        gray0 = self._to_grayscale(image0)
+        gray1 = self._to_grayscale(image1)
+        gray0, pad0 = self._pad_to_multiple(gray0, multiple=8)
+        gray1, pad1 = self._pad_to_multiple(gray1, multiple=8)
+        if self.loftr_device is not None:
+            gray0 = gray0.to(self.loftr_device)
+            gray1 = gray1.to(self.loftr_device)
+        t_preproc = time.perf_counter() - t0
+
+        with torch.inference_mode():
+            t1 = time.perf_counter()
+            output = self.loftr_matcher({"image0": gray0, "image1": gray1})
+            t_match = time.perf_counter() - t1
+
+        kpts0 = output.get("keypoints0")
+        kpts1 = output.get("keypoints1")
+        mconf = output.get("confidence")
+        if kpts0 is not None:
+            kpts0 = kpts0.detach().cpu()
+        if kpts1 is not None:
+            kpts1 = kpts1.detach().cpu()
+        if mconf is not None:
+            mconf = mconf.detach().cpu()
+        del output
+        if kpts0 is None or kpts1 is None or kpts0.numel() == 0 or kpts1.numel() == 0:
+            empty = torch.zeros((0, 2), dtype=torch.float32)
+            if mconf is None:
+                mconf = torch.zeros((0,), dtype=torch.float32)
+            return {
+                "preproc_s": t_preproc,
+                "match_s": t_match,
+                "filter_s": 0.0,
+                "kpts0": empty,
+                "kpts1": empty,
+                "mconf": mconf[:0],
+            }
+
+        if mconf is None:
+            mconf = torch.ones((kpts0.shape[0],), dtype=kpts0.dtype)
+
+        t2 = time.perf_counter()
+        finite_mask = (
+            torch.isfinite(kpts0[:, 0])
+            & torch.isfinite(kpts0[:, 1])
+            & torch.isfinite(kpts1[:, 0])
+            & torch.isfinite(kpts1[:, 1])
+            & torch.isfinite(mconf)
+        )
+        kpts0 = kpts0[finite_mask]
+        kpts1 = kpts1[finite_mask]
+        mconf = mconf[finite_mask]
+        mask = (
+            (kpts0[:, 0] >= 0.0)
+            & (kpts0[:, 1] >= 0.0)
+            & (kpts0[:, 0] <= float(pad0["orig_w"] - 1))
+            & (kpts0[:, 1] <= float(pad0["orig_h"] - 1))
+            & (kpts1[:, 0] >= 0.0)
+            & (kpts1[:, 1] >= 0.0)
+            & (kpts1[:, 0] <= float(pad1["orig_w"] - 1))
+            & (kpts1[:, 1] <= float(pad1["orig_h"] - 1))
+        )
+        kpts0 = kpts0[mask]
+        kpts1 = kpts1[mask]
+        mconf = mconf[mask]
+        t_filter = time.perf_counter() - t2
+        return {
+            "preproc_s": t_preproc,
+            "match_s": t_match,
+            "filter_s": t_filter,
+            "kpts0": kpts0,
+            "kpts1": kpts1,
+            "mconf": mconf,
+        }
+
     def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         if self.match_mode == "sparse":
             H = self.sparse_matcher.match(
@@ -487,6 +600,209 @@ class GimDKM:
             else:
                 self.last_angle_results = []
             return H
+        if self.match_mode == "loftr":
+            t_total = time.perf_counter()
+            self.last_angle_results = []
+            rotate_step = self._normalize_rotate_step(rotate)
+            if rotate_step <= 1e-6:
+                yaw0 = None
+                yaw1 = None
+
+            candidate_angles = self._build_candidate_angles(rotate_step)
+
+            best_H = np.eye(3)
+            best_inliers = -1
+            best_stats = None
+            best_geom_info = None
+            best_data = None
+            best_rot_angle = 0.0
+
+            rotation_search_logs = []
+            base_rot_angle = self._yaw_to_angle(yaw0, yaw1)
+
+            for search_angle in candidate_angles:
+                try:
+                    rot_angle = ((base_rot_angle + search_angle + 180.0) % 360.0) - 180.0
+                    image1_rot, inv_rot_m = self._rotate_image_tensor(image1, rot_angle)
+                    loftr_out = self._match_loftr_once(image0, image1_rot)
+                    kpts0 = loftr_out["kpts0"]
+                    kpts1 = loftr_out["kpts1"]
+                    mconf = loftr_out["mconf"]
+                    t_preproc = loftr_out["preproc_s"]
+                    t_match = loftr_out["match_s"]
+                    t_filter = loftr_out["filter_s"]
+
+                    if kpts0.shape[0] > 0:
+                        kpts1_np = self._warp_points_affine(kpts1.detach().cpu().numpy(), inv_rot_m)
+                        kpts1 = torch.from_numpy(kpts1_np)
+                        finite_mask = (
+                            torch.isfinite(kpts0[:, 0])
+                            & torch.isfinite(kpts0[:, 1])
+                            & torch.isfinite(kpts1[:, 0])
+                            & torch.isfinite(kpts1[:, 1])
+                            & torch.isfinite(mconf)
+                        )
+                        kpts0 = kpts0[finite_mask]
+                        kpts1 = kpts1[finite_mask]
+                        mconf = mconf[finite_mask]
+
+                    if len(kpts0) == 0 or len(kpts1) == 0:
+                        rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches=0 | Inliers=0]")
+                        continue
+                    if kpts0.shape[0] < 8 or kpts1.shape[0] < 8:
+                        rotation_search_logs.append(
+                            f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches={kpts0.shape[0]:>4d} | TooFew]"
+                        )
+                        continue
+
+                    kpts0_np = np.ascontiguousarray(kpts0.detach().cpu().numpy(), dtype=np.float32)
+                    kpts1_np = np.ascontiguousarray(kpts1.detach().cpu().numpy(), dtype=np.float32)
+                    if (not np.isfinite(kpts0_np).all()) or (not np.isfinite(kpts1_np).all()):
+                        rotation_search_logs.append(
+                            f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): NonFinite]"
+                        )
+                        continue
+
+                    try:
+                        t5 = time.perf_counter()
+                        H_candidate, mask_h = cv2.findHomography(
+                            kpts1_np,
+                            kpts0_np,
+                            method=RANSAC_ZOO[DEFAULT_RANSAC_METHOD],
+                            ransacReprojThreshold=DEFAULT_RANSAC_REPROJ_THRESHOLD,
+                            confidence=DEFAULT_RANSAC_CONFIDENCE,
+                            maxIters=DEFAULT_RANSAC_MAX_ITER,
+                        )
+                        t_h = time.perf_counter() - t5
+                    except Exception:
+                        self.stats['h_fail'] += 1
+                        rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): H_Fail]")
+                        continue
+
+                    if H_candidate is None or mask_h is None or (not np.isfinite(H_candidate).all()):
+                        self.stats['h_fail'] += 1
+                        rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): H_None]")
+                        continue
+
+                    mask = mask_h.ravel() > 0
+                    inliers_count = int(mask.sum())
+
+                    data = {
+                        'color0': image0,
+                        'color1': image1_rot,
+                        'image0': image0,
+                        'image1': image1_rot,
+                        'hw0_i': image0.shape[-2:],
+                        'hw1_i': image1.shape[-2:],
+                        'mkpts0_f': kpts0,
+                        'mkpts1_f': kpts1,
+                        'm_bids': torch.zeros((kpts0.shape[0],), dtype=torch.long),
+                        'mconf': mconf,
+                        'inliers': mask,
+                    }
+                    geom_info = {"Homography": H_candidate.tolist()}
+
+                    rotation_search_logs.append(
+                        f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches={kpts0.shape[0]:>4d} | Inliers={inliers_count:>4d}]"
+                    )
+
+                    if inliers_count > best_inliers:
+                        best_inliers = inliers_count
+                        best_H = np.array(H_candidate, dtype=np.float32)
+                        best_geom_info = geom_info
+                        best_data = data
+                        best_rot_angle = rot_angle
+                        best_stats = {
+                            "preproc_s": t_preproc,
+                            "dkm_match_s": t_match,
+                            "dkm_sample_s": 0.0,
+                            "coord_s": 0.0,
+                            "filter_s": t_filter,
+                            "ransac_f_s": 0.0,
+                            "ransac_h_s": t_h,
+                            "n_samples": int(kpts0.shape[0]),
+                            "n_kept": int(kpts0.shape[0]),
+                        }
+                except Exception as e:
+                    self._log(logging.WARNING, "LoFTR 匹配异常 (Angle: %.1f): %s", search_angle, str(e))
+                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°: Exception]")
+                    continue
+
+            total_t = time.perf_counter() - t_total
+            search_log_str = " | ".join(rotation_search_logs) if len(rotation_search_logs) > 1 else ""
+
+            if best_stats is None:
+                self.stats['empty_kpts'] += 1
+                self.stats['n_queries'] += 1
+                self.stats['total_s'] += total_t
+                self.last_match_info = {
+                    "match_mode": "loftr",
+                    "phase": 1,
+                    "inliers": 0,
+                    "inlier_ratio": 0.0,
+                    "rot_angle": 0.0,
+                    "n_kept": 0,
+                    "identity_h_fallback": True,
+                    "fallback_to_center": True,
+                    "fallback_reason": "all_failed",
+                    "out_of_bounds": False,
+                    "projection_invalid": False,
+                }
+                if search_log_str:
+                    self._log(logging.DEBUG, "LoFTR搜索详情: %s => 全部失败", search_log_str)
+                return np.eye(3)
+
+            if vis and best_data is not None:
+                alpha = 0.5
+                out = fast_make_matching_figure(best_data, b_id=0)
+                overlay = fast_make_matching_overlay(best_data, b_id=0)
+                out = cv2.addWeighted(out, 1 - alpha, overlay, alpha, 0)
+                cv2.imwrite(join('game4loc/matcher/assets/', f'match.png'), out[..., ::-1])
+                wrapped_images = wrap_images(image0, image1, best_geom_info, "Homography")
+                cv2.imwrite(join('game4loc/matcher/assets/', f'warp.png'), wrapped_images)
+
+            self.stats['n_queries'] += 1
+            self.stats['preproc_s'] += best_stats['preproc_s']
+            self.stats['dkm_match_s'] += best_stats['dkm_match_s']
+            self.stats['dkm_sample_s'] += best_stats['dkm_sample_s']
+            self.stats['coord_s'] += best_stats['coord_s']
+            self.stats['filter_s'] += best_stats['filter_s']
+            self.stats['ransac_f_s'] += best_stats['ransac_f_s']
+            self.stats['ransac_h_s'] += best_stats['ransac_h_s']
+            self.stats['total_s'] += total_t
+            self.stats['n_samples'] += best_stats['n_samples']
+            self.stats['n_kept'] += best_stats['n_kept']
+
+            if search_log_str:
+                self._log(logging.DEBUG, "LoFTR搜索详情: %s => 最终选择Rot=%.1f°", search_log_str, float(best_rot_angle))
+
+            self._log(
+                logging.DEBUG,
+                "with_match 子步骤(LoFTR): 预处理=%.6fs LoFTR匹配=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs 匹配数=%d 内点数=%d yaw旋转角=%.2f",
+                best_stats['preproc_s'],
+                best_stats['dkm_match_s'],
+                best_stats['filter_s'],
+                best_stats['ransac_f_s'],
+                best_stats['ransac_h_s'],
+                total_t,
+                best_stats['n_kept'],
+                best_inliers,
+                float(best_rot_angle),
+            )
+            self.last_match_info = {
+                "match_mode": "loftr",
+                "phase": 1,
+                "inliers": int(best_inliers),
+                "inlier_ratio": float(best_inliers) / float(max(int(best_stats["n_kept"]), 1)),
+                "rot_angle": float(best_rot_angle),
+                "n_kept": int(best_stats["n_kept"]),
+                "identity_h_fallback": False,
+                "fallback_to_center": False,
+                "fallback_reason": None,
+                "out_of_bounds": False,
+                "projection_invalid": False,
+            }
+            return best_H
 
         t_total = time.perf_counter()
         self.last_angle_results = []
@@ -802,6 +1118,27 @@ class GimDKM:
         avg_ns = self.stats['n_samples'] / n
         avg_keep = self.stats['n_kept'] / n
         self._log(logging.INFO, "with_match 模式: %s", self.match_mode)
+        if self.match_mode == "loftr":
+            self._log(
+                logging.INFO,
+                "with_match 阶段平均耗时: 预处理=%.6fs LoFTR匹配=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs",
+                avg_pre,
+                avg_match,
+                avg_filter,
+                avg_f,
+                avg_h,
+                avg_total,
+            )
+            self._log(
+                logging.INFO,
+                "with_match 阶段样本统计: 平均保留数=%.1f 失败(F)=%d 失败(H)=%d 空匹配=%d 总查询=%d",
+                avg_keep,
+                self.stats['f_fail'],
+                self.stats['h_fail'],
+                self.stats['empty_kpts'],
+                self.stats['n_queries'],
+            )
+            return
         self._log(logging.INFO,
                   "with_match 阶段平均耗时: 预处理=%.6fs 稠密匹配=%.6fs 采样=%.6fs 坐标换算=%.6fs 边界过滤=%.6fs RANSAC(F)=%.6fs RANSAC(H)=%.6fs 总计=%.6fs",
                   avg_pre, avg_match, avg_sample, avg_coord, avg_filter, avg_f, avg_h, avg_total)

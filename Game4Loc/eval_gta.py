@@ -20,6 +20,29 @@ def parse_tuple(s):
         raise argparse.ArgumentTypeError("Tuple must be integers separated by commas")
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    value_str = str(value).strip().lower()
+    if value_str in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value_str in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Boolean value expected, got: {value}")
+
+
+def parse_float_list(value):
+    if isinstance(value, (list, tuple)):
+        return tuple(float(v) for v in value)
+    raw = str(value).strip()
+    if not raw:
+        return tuple()
+    try:
+        return tuple(float(item.strip()) for item in raw.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Float list expected, got: {value}") from exc
+
+
 @dataclass
 class Configuration:
 
@@ -47,6 +70,25 @@ class Configuration:
     save_match_vis: bool = False
     match_vis_dir: str = ""
     match_vis_max_save: int = 200
+    sparse_angle_score_inlier_offset: float | None = None
+    sparse_use_multi_scale: bool = True
+    sparse_scales: tuple = (1.0, 0.8, 0.6, 1.2)
+    sparse_multi_scale_mode: str = "both"
+    sparse_allow_upsample: bool = False
+    sparse_cross_scale_dedup_radius: float = 0.0
+    sparse_lightglue_profile: str = "current"
+    sparse_sp_detection_threshold: float = 0.0003
+    sparse_sp_max_num_keypoints: int = 4096
+    sparse_sp_nms_radius: int = 4
+    sparse_ransac_method: str = "RANSAC"
+    sparse_secondary_on_fallback: bool = False
+    sparse_secondary_ransac_method: str = "RANSAC"
+    sparse_secondary_mode: str = "per_candidate"
+    sparse_secondary_accept_min_inliers: int = 0
+    sparse_secondary_accept_min_inlier_ratio: float = 0.0
+    sparse_ransac_reproj_threshold: float = 20.0
+    sparse_min_inliers: int = 15
+    sparse_min_inlier_ratio: float = 0.001
 
     # set num_workers to 0 if on Windows
     num_workers: int = 0 if os.name == 'nt' else 4 
@@ -73,6 +115,7 @@ class Configuration:
     iteration: bool = False
     rotate: bool = True
     query_limit: int = 0
+    query_offset: int = 0
 
 
 def eval_script(config):
@@ -88,7 +131,8 @@ def eval_script(config):
         log_level=logging.DEBUG, 
         logger_name="game4loc.eval", 
         run_type=run_type_str, 
-        dataset_name=""
+        dataset_name="",
+        log_file_path=config.log_path,
     )
     log_run_header(logger, run_mode="test", algorithm_name=config.model)
     logger.info("自动日志路径: %s", log_path)
@@ -98,7 +142,29 @@ def eval_script(config):
         logger.info("with_match 子步骤模式: %s", config.match_mode)
         if config.match_mode == 'sparse':
             logger.info("稀疏匹配偏航角 (yaw) 先验: %s", "启用 (如果数据提供)" if config.use_yaw else "关闭 (默认仅做旋转搜索)")
+            logger.info("稀疏多尺度匹配: %s", "开启" if config.sparse_use_multi_scale else "关闭")
+            logger.info("稀疏尺度列表: %s", ",".join(f"{float(scale):.3f}" for scale in config.sparse_scales))
+            logger.info("稀疏多尺度缩放模式: %s", config.sparse_multi_scale_mode)
+            logger.info("稀疏允许上采样: %s", "开启" if config.sparse_allow_upsample else "关闭")
+            logger.info("稀疏跨尺度去重半径: %.2f px", float(config.sparse_cross_scale_dedup_radius))
+            logger.info("稀疏 LightGlue 配置档: %s", config.sparse_lightglue_profile)
+            logger.info("稀疏 SuperPoint detection_threshold: %.6f", float(config.sparse_sp_detection_threshold))
+            logger.info("稀疏 SuperPoint max_num_keypoints: %d", int(config.sparse_sp_max_num_keypoints))
+            logger.info("稀疏 SuperPoint nms_radius: %d", int(config.sparse_sp_nms_radius))
+            logger.info("稀疏 Homography RANSAC method: %s", str(config.sparse_ransac_method))
+            logger.info("稀疏 Homography RANSAC threshold: %.3f", float(config.sparse_ransac_reproj_threshold))
+            logger.info("稀疏 H 质量门槛: min_inliers=%d min_inlier_ratio=%.6f", int(config.sparse_min_inliers), float(config.sparse_min_inlier_ratio))
+            if bool(config.sparse_secondary_on_fallback):
+                logger.info(
+                    "GTA 稀疏双路径回退: 开启 (primary=%s -> secondary=%s, mode=%s, accept_min_inliers=%d, accept_min_inlier_ratio=%.4f)",
+                    str(config.sparse_ransac_method),
+                    str(config.sparse_secondary_ransac_method),
+                    str(config.sparse_secondary_mode),
+                    int(config.sparse_secondary_accept_min_inliers),
+                    float(config.sparse_secondary_accept_min_inlier_ratio),
+                )
             logger.info("稀疏匹配四向旋转搜索 (rotate): %s", "启用" if config.rotate else "关闭")
+            logger.info("稀疏旋转候选筛选: 按 inlier count 选最优，同分时按 inlier ratio 打破平局")
             logger.info("VOP 方向后验模式: %s", config.orientation_mode)
             if config.orientation_mode != "off":
                 logger.info("VOP 权重路径: %s", config.orientation_checkpoint)
@@ -200,9 +266,25 @@ def eval_script(config):
         config.query_limit = len(query_dataset_test) // 10
         logger.info("启用 --iteration 模式，将仅评估前 %d 张查询图像 (约 1/10 的数据)", config.query_limit)
 
-    if config.query_limit is not None and config.query_limit > 0:
-        # 为了保证每次跑的数据相同，这里固定取前 query_limit 张图像
-        query_indices = list(range(min(config.query_limit, len(query_dataset_test))))
+    total_query_count = len(query_dataset_test)
+    query_offset = max(int(getattr(config, "query_offset", 0)), 0)
+    if query_offset > 0:
+        logger.info("启用查询分片偏移: query_offset=%d", query_offset)
+
+    if (config.query_limit is not None and config.query_limit > 0) or query_offset > 0:
+        query_start = min(query_offset, total_query_count)
+        if config.query_limit is not None and config.query_limit > 0:
+            query_end = min(query_start + int(config.query_limit), total_query_count)
+        else:
+            query_end = total_query_count
+        query_indices = list(range(query_start, query_end))
+        logger.info(
+            "本次评估查询切片: start=%d end=%d count=%d / total=%d",
+            query_start,
+            query_end,
+            len(query_indices),
+            total_query_count,
+        )
         query_dataset_test = Subset(query_dataset_test, query_indices)
         # derive lists from subset
         full_q_names = getattr(query_dataset_test.dataset, "images_name", [])
@@ -275,6 +357,25 @@ def eval_script(config):
             save_match_vis=config.save_match_vis,
             match_vis_dir=config.match_vis_dir,
             match_vis_max_save=config.match_vis_max_save,
+            sparse_angle_score_inlier_offset=config.sparse_angle_score_inlier_offset,
+            sparse_use_multi_scale=config.sparse_use_multi_scale,
+            sparse_scales=config.sparse_scales,
+            sparse_multi_scale_mode=config.sparse_multi_scale_mode,
+            sparse_allow_upsample=config.sparse_allow_upsample,
+            sparse_cross_scale_dedup_radius=config.sparse_cross_scale_dedup_radius,
+            sparse_lightglue_profile=config.sparse_lightglue_profile,
+            sparse_sp_detection_threshold=config.sparse_sp_detection_threshold,
+            sparse_sp_max_num_keypoints=config.sparse_sp_max_num_keypoints,
+            sparse_sp_nms_radius=config.sparse_sp_nms_radius,
+            sparse_ransac_method=config.sparse_ransac_method,
+            sparse_secondary_on_fallback=config.sparse_secondary_on_fallback,
+            sparse_secondary_ransac_method=config.sparse_secondary_ransac_method,
+            sparse_secondary_mode=config.sparse_secondary_mode,
+            sparse_secondary_accept_min_inliers=config.sparse_secondary_accept_min_inliers,
+            sparse_secondary_accept_min_inlier_ratio=config.sparse_secondary_accept_min_inlier_ratio,
+            sparse_ransac_reproj_threshold=config.sparse_ransac_reproj_threshold,
+            sparse_min_inliers=config.sparse_min_inliers,
+            sparse_min_inlier_ratio=config.sparse_min_inlier_ratio,
             logger=logger,
             rotate=config.rotate,
         )
@@ -301,6 +402,7 @@ def parse_args():
     match_group = parser.add_mutually_exclusive_group()
     match_group.add_argument('--dense', dest='match_mode', action='store_const', const='dense', help='Use dense matching in with_match step (original behavior)')
     match_group.add_argument('--sparse', dest='match_mode', action='store_const', const='sparse', help='Use sparse fast path in with_match step')
+    match_group.add_argument('--loftr', dest='match_mode', action='store_const', const='loftr', help='Use LoFTR matching in with_match step')
     parser.set_defaults(match_mode='sparse')
     parser.add_argument('--orientation_checkpoint', type=str, default='', help='Checkpoint path for the visual orientation posterior head')
     parser.add_argument('--orientation_mode', type=str, default='off', choices=('off', 'prior_single', 'prior_topk'), help='How to use the visual orientation posterior in GTA sparse fine localization')
@@ -309,7 +411,27 @@ def parse_args():
     parser.add_argument('--save_match_vis', action='store_true', help='Save sparse final match visualizations for each query')
     parser.add_argument('--match_vis_dir', type=str, default='', help='Directory for sparse final match visualizations')
     parser.add_argument('--match_vis_max_save', type=int, default=200, help='Maximum number of sparse final match visualizations to save')
+    parser.add_argument('--sparse_angle_score_inlier_offset', type=float, default=None, help='Optional sparse rotate-candidate score offset. Leave unset to select by inlier count only.')
+    parser.add_argument('--sparse_use_multi_scale', type=parse_bool, nargs='?', const=True, default=True, help='Enable sparse multi-scale matching. Default is True.')
+    parser.add_argument('--sparse_scales', type=parse_float_list, default=(1.0, 0.8, 0.6, 1.2), help='Comma-separated sparse scale multipliers, for example 1.0,0.8,0.6,1.2')
+    parser.add_argument('--sparse_multi_scale_mode', type=str, default='both', choices=('both', 'query_only', 'gallery_only'), help='How sparse multi-scale resizing is applied. Default is both.')
+    parser.add_argument('--sparse_allow_upsample', type=parse_bool, nargs='?', const=True, default=False, help='Allow sparse scales above 1.0 to enlarge the image up to the matcher max edge. Default is False.')
+    parser.add_argument('--sparse_cross_scale_dedup_radius', type=float, default=0.0, help='Greedy dedup radius in pixels after concatenating sparse matches across scales. Default is 0.')
+    parser.add_argument('--sparse_lightglue_profile', type=str, default='current', choices=('current', 'official_default', 'minima_ref'), help='Sparse LightGlue config profile.')
+    parser.add_argument('--sparse_sp_detection_threshold', type=float, default=0.0003, help='Sparse SuperPoint detection threshold.')
+    parser.add_argument('--sparse_sp_max_num_keypoints', type=int, default=4096, help='Sparse SuperPoint max_num_keypoints.')
+    parser.add_argument('--sparse_sp_nms_radius', type=int, default=4, help='Sparse SuperPoint NMS radius.')
+    parser.add_argument('--sparse_ransac_method', type=str, default='RANSAC', choices=('RANSAC', 'USAC_FAST', 'USAC_MAGSAC', 'USAC_PROSAC', 'USAC_DEFAULT', 'USAC_FM_8PTS', 'USAC_ACCURATE', 'USAC_PARALLEL'), help='Sparse homography estimator method.')
+    parser.add_argument('--sparse_secondary_on_fallback', type=parse_bool, nargs='?', const=True, default=False, help='Retry sparse fine localization with a secondary matcher only when the primary path falls back to coarse center.')
+    parser.add_argument('--sparse_secondary_ransac_method', type=str, default='RANSAC', choices=('RANSAC', 'USAC_FAST', 'USAC_MAGSAC', 'USAC_PROSAC', 'USAC_DEFAULT', 'USAC_FM_8PTS', 'USAC_ACCURATE', 'USAC_PARALLEL'), help='Sparse secondary homography estimator method used by the optional fallback retry.')
+    parser.add_argument('--sparse_secondary_mode', type=str, default='per_candidate', choices=('per_candidate', 'final_only'), help='How the optional sparse secondary fallback is applied.')
+    parser.add_argument('--sparse_secondary_accept_min_inliers', type=int, default=0, help='Additional minimum inliers required before accepting a secondary sparse retry result.')
+    parser.add_argument('--sparse_secondary_accept_min_inlier_ratio', type=float, default=0.0, help='Additional minimum inlier ratio required before accepting a secondary sparse retry result.')
+    parser.add_argument('--sparse_ransac_reproj_threshold', type=float, default=20.0, help='Sparse homography RANSAC reprojection threshold in pixels.')
+    parser.add_argument('--sparse_min_inliers', type=int, default=15, help='Minimum inlier count required before accepting sparse homography.')
+    parser.add_argument('--sparse_min_inlier_ratio', type=float, default=0.001, help='Minimum inlier ratio required before accepting sparse homography.')
     parser.add_argument('--query_limit', type=int, default=0, help='Limit the number of queries for quick evaluation (0 for all)')
+    parser.add_argument('--query_offset', type=int, default=0, help='Skip the first N queries before applying query_limit. Default is 0.')
 
     parser.add_argument('--gpu_ids', type=parse_tuple, default=(0,1), help='GPU ID')
 
@@ -325,7 +447,7 @@ def parse_args():
     parser.add_argument('--use_yaw', action='store_true', help='Use yaw information during sparse matching')
     parser.add_argument('--ignore_yaw', action='store_false', dest='use_yaw', help=argparse.SUPPRESS)
     parser.add_argument('--iteration', action='store_true', help='If True, only evaluate on 1/10 of the query data (fixed subset) for faster iteration.')
-    parser.add_argument('--no_rotate', action='store_true', help='Disable 4-way rotation search in sparse mode. By default rotation search is enabled.')
+    parser.add_argument('--no_rotate', action='store_true', help='Disable 4-way rotation search in fine localization. By default GTA sparse/dense matching uses rotate90 search when this flag is omitted.')
 
     args = parser.parse_args()
     return args
@@ -357,7 +479,27 @@ if __name__ == '__main__':
     config.save_match_vis = args.save_match_vis
     config.match_vis_dir = args.match_vis_dir
     config.match_vis_max_save = max(1, int(args.match_vis_max_save))
+    config.sparse_angle_score_inlier_offset = None if args.sparse_angle_score_inlier_offset is None else float(args.sparse_angle_score_inlier_offset)
+    config.sparse_use_multi_scale = bool(args.sparse_use_multi_scale)
+    config.sparse_scales = tuple(float(scale) for scale in args.sparse_scales)
+    config.sparse_multi_scale_mode = args.sparse_multi_scale_mode
+    config.sparse_allow_upsample = bool(args.sparse_allow_upsample)
+    config.sparse_cross_scale_dedup_radius = float(args.sparse_cross_scale_dedup_radius)
+    config.sparse_lightglue_profile = args.sparse_lightglue_profile
+    config.sparse_sp_detection_threshold = float(args.sparse_sp_detection_threshold)
+    config.sparse_sp_max_num_keypoints = int(args.sparse_sp_max_num_keypoints)
+    config.sparse_sp_nms_radius = int(args.sparse_sp_nms_radius)
+    config.sparse_ransac_method = str(args.sparse_ransac_method)
+    config.sparse_secondary_on_fallback = bool(args.sparse_secondary_on_fallback)
+    config.sparse_secondary_ransac_method = str(args.sparse_secondary_ransac_method)
+    config.sparse_secondary_mode = str(args.sparse_secondary_mode)
+    config.sparse_secondary_accept_min_inliers = int(args.sparse_secondary_accept_min_inliers)
+    config.sparse_secondary_accept_min_inlier_ratio = float(args.sparse_secondary_accept_min_inlier_ratio)
+    config.sparse_ransac_reproj_threshold = float(args.sparse_ransac_reproj_threshold)
+    config.sparse_min_inliers = int(args.sparse_min_inliers)
+    config.sparse_min_inlier_ratio = float(args.sparse_min_inlier_ratio)
     config.query_limit = args.query_limit
+    config.query_offset = args.query_offset
     config.use_wandb = False # 强制关闭wandb
     config.use_yaw = args.use_yaw
     config.iteration = args.iteration

@@ -26,6 +26,13 @@ class SparseSpLgMatcher:
         allow_upsample=False,
         cross_scale_dedup_radius=0.0,
         lightglue_profile="current",
+        sp_detection_threshold=0.0003,
+        sp_max_num_keypoints=4096,
+        sp_nms_radius=4,
+        ransac_method="RANSAC",
+        ransac_reproj_threshold=20.0,
+        min_inliers=15,
+        min_inlier_ratio=0.001,
         save_final_matches=False,
         save_final_matches_dir=None,
         save_final_matches_max=200,
@@ -33,19 +40,12 @@ class SparseSpLgMatcher:
         # Stable sparse defaults selected from the controlled VisLoc yaw-aligned tuning.
         if scales is None:
             scales = (1.0, 0.8, 0.6, 1.2)
-        ransac_method = "RANSAC"
-        ransac_reproj_threshold = 20.0
         ransac_confidence = 0.99
         ransac_max_iter = 1000
-        sp_detection_threshold = 0.003
-        sp_max_num_keypoints = 2048
-        sp_nms_radius = 4
         sp_remove_borders = 4
         sp_max_edge = 1024
         max_matches_per_scale = 1024
         max_total_matches = 4096
-        min_inliers = 15
-        min_inlier_ratio = 0.001
         self.device = device
         self.logger = logger
         self.project_root = os.path.abspath(join(os.path.dirname(__file__), "..", ".."))
@@ -78,6 +78,15 @@ class SparseSpLgMatcher:
                 "flash": True,
                 "mp": False,
                 "depth_confidence": 0.95,
+                "width_confidence": 0.99,
+                "checkpointed": False,
+            }
+        elif lightglue_profile_key == "minima_ref":
+            lg_conf = {
+                "filter_threshold": 0.1,
+                "flash": True,
+                "mp": False,
+                "depth_confidence": -1,
                 "width_confidence": 0.99,
                 "checkpointed": False,
             }

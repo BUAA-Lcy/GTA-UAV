@@ -116,6 +116,101 @@ def _format_count_ratio(count, total):
     return int(count), float(count) * 100.0 / float(total)
 
 
+def _extract_match_info(matcher):
+    if matcher is None:
+        return None
+    if hasattr(matcher, "get_last_match_info"):
+        return matcher.get_last_match_info()
+    return getattr(matcher, "last_match_info", None)
+
+
+def _should_retry_sparse_with_secondary(match_info):
+    if not isinstance(match_info, dict):
+        return True
+    if bool(match_info.get("fallback_to_center", False)):
+        return True
+    if bool(match_info.get("identity_h_fallback", False)):
+        return True
+    reason = str(match_info.get("fallback_reason", "")).strip().lower()
+    return reason in {"all_failed", "low_match", "low_quality", "projection_invalid", "out_of_bounds"}
+
+
+def _accept_sparse_secondary_result(match_info, min_inliers=0, min_inlier_ratio=0.0):
+    if _should_retry_sparse_with_secondary(match_info):
+        return False
+    if not isinstance(match_info, dict):
+        return False
+    inliers = int(match_info.get("inliers", 0))
+    inlier_ratio = float(match_info.get("inlier_ratio", 0.0))
+    if inliers < int(min_inliers):
+        return False
+    if inlier_ratio < float(min_inlier_ratio):
+        return False
+    return True
+
+
+def _run_match_with_optional_secondary(
+    primary_matcher,
+    secondary_matcher,
+    image0,
+    image1,
+    center_xy0,
+    tl_xy0,
+    yaw0=None,
+    yaw1=None,
+    rotate=True,
+    case_name=None,
+    secondary_accept_min_inliers=0,
+    secondary_accept_min_inlier_ratio=0.0,
+):
+    primary_loc = primary_matcher.est_center(
+        image0,
+        image1,
+        center_xy0,
+        tl_xy0,
+        yaw0=yaw0,
+        yaw1=yaw1,
+        rotate=rotate,
+        case_name=case_name,
+    )
+    primary_info = _extract_match_info(primary_matcher)
+    chosen_loc = primary_loc
+    chosen_info = dict(primary_info) if isinstance(primary_info, dict) else primary_info
+    chosen_matcher = primary_matcher
+    secondary_retry_used = False
+
+    if secondary_matcher is not None and _should_retry_sparse_with_secondary(primary_info):
+        secondary_case_name = None if case_name is None else f"{case_name}_secondary"
+        secondary_loc = secondary_matcher.est_center(
+            image0,
+            image1,
+            center_xy0,
+            tl_xy0,
+            yaw0=yaw0,
+            yaw1=yaw1,
+            rotate=rotate,
+            case_name=secondary_case_name,
+            save_final_vis=False,
+        )
+        secondary_info = _extract_match_info(secondary_matcher)
+        if _accept_sparse_secondary_result(
+            secondary_info,
+            min_inliers=secondary_accept_min_inliers,
+            min_inlier_ratio=secondary_accept_min_inlier_ratio,
+        ):
+            chosen_loc = secondary_loc
+            chosen_info = dict(secondary_info) if isinstance(secondary_info, dict) else secondary_info
+            chosen_matcher = secondary_matcher
+            secondary_retry_used = True
+
+    if isinstance(chosen_info, dict):
+        chosen_info = dict(chosen_info)
+        chosen_info["secondary_retry_used"] = bool(secondary_retry_used)
+        chosen_info["primary_fallback_reason"] = None if not isinstance(primary_info, dict) else primary_info.get("fallback_reason")
+
+    return chosen_loc, chosen_info, chosen_matcher
+
+
 def _annotate_match_visual(vis_path, text_lines, logger=None):
     if not vis_path or not os.path.isfile(vis_path):
         return
@@ -222,6 +317,25 @@ def evaluate(
         save_match_vis=False,
         match_vis_dir="",
         match_vis_max_save=200,
+        sparse_angle_score_inlier_offset=None,
+        sparse_use_multi_scale=True,
+        sparse_scales=(1.0, 0.8, 0.6, 1.2),
+        sparse_multi_scale_mode="both",
+        sparse_allow_upsample=False,
+        sparse_cross_scale_dedup_radius=0.0,
+        sparse_lightglue_profile="current",
+        sparse_sp_detection_threshold=0.0003,
+        sparse_sp_max_num_keypoints=4096,
+        sparse_sp_nms_radius=4,
+        sparse_ransac_method="RANSAC",
+        sparse_secondary_on_fallback=False,
+        sparse_secondary_ransac_method="RANSAC",
+        sparse_secondary_mode="per_candidate",
+        sparse_secondary_accept_min_inliers=0,
+        sparse_secondary_accept_min_inlier_ratio=0.0,
+        sparse_ransac_reproj_threshold=20.0,
+        sparse_min_inliers=15,
+        sparse_min_inlier_ratio=0.001,
         logger=None,
         rotate=True,
         epoch=None):
@@ -230,6 +344,29 @@ def evaluate(
         logger = logging.getLogger("game4loc.eval")
     logger.info("开始提取特征并计算相似度分数")
     logger.info("评估参数: ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s", ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode)
+    if with_match and match_mode == "sparse":
+        logger.debug(
+            "GTA sparse 参数: angle_score_offset=%s use_multi_scale=%s scales=%s multi_scale_mode=%s allow_upsample=%s cross_scale_dedup_radius=%.2f lightglue_profile=%s sp_det=%.6f sp_max_kpts=%d sp_nms=%d ransac_method=%s secondary_on_fallback=%s secondary_ransac_method=%s secondary_mode=%s secondary_accept_min_inliers=%d secondary_accept_min_inlier_ratio=%.6f ransac_thresh=%.3f min_inliers=%d min_inlier_ratio=%.6f",
+            sparse_angle_score_inlier_offset,
+            sparse_use_multi_scale,
+            sparse_scales,
+            sparse_multi_scale_mode,
+            sparse_allow_upsample,
+            float(sparse_cross_scale_dedup_radius),
+            sparse_lightglue_profile,
+            float(sparse_sp_detection_threshold),
+            int(sparse_sp_max_num_keypoints),
+            int(sparse_sp_nms_radius),
+            str(sparse_ransac_method),
+            bool(sparse_secondary_on_fallback),
+            str(sparse_secondary_ransac_method),
+            str(sparse_secondary_mode),
+            int(sparse_secondary_accept_min_inliers),
+            float(sparse_secondary_accept_min_inlier_ratio),
+            float(sparse_ransac_reproj_threshold),
+            int(sparse_min_inliers),
+            float(sparse_min_inlier_ratio),
+        )
     model.eval()
     t_query = time.perf_counter()
     img_features_query = predict(config, model, query_loader)
@@ -260,12 +397,52 @@ def evaluate(
             device=config.device,
             logger=logger,
             match_mode=match_mode,
+            sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
+            sparse_use_multi_scale=sparse_use_multi_scale,
+            sparse_scales=sparse_scales,
+            sparse_multi_scale_mode=sparse_multi_scale_mode,
+            sparse_allow_upsample=sparse_allow_upsample,
+            sparse_cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
+            sparse_lightglue_profile=sparse_lightglue_profile,
+            sparse_sp_detection_threshold=sparse_sp_detection_threshold,
+            sparse_sp_max_num_keypoints=sparse_sp_max_num_keypoints,
+            sparse_sp_nms_radius=sparse_sp_nms_radius,
+            sparse_ransac_method=sparse_ransac_method,
+            sparse_ransac_reproj_threshold=sparse_ransac_reproj_threshold,
+            sparse_min_inliers=sparse_min_inliers,
+            sparse_min_inlier_ratio=sparse_min_inlier_ratio,
             sparse_save_final_vis=bool(save_match_vis),
             sparse_save_final_vis_dir=(match_vis_dir if str(match_vis_dir).strip() else None),
             sparse_save_final_vis_max=int(match_vis_max_save),
         )
+        secondary_matcher = None
+        if match_mode == "sparse" and bool(sparse_secondary_on_fallback):
+            secondary_matcher = GimDKM(
+                device=config.device,
+                logger=logger,
+                match_mode=match_mode,
+                sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
+                sparse_use_multi_scale=sparse_use_multi_scale,
+                sparse_scales=sparse_scales,
+                sparse_multi_scale_mode=sparse_multi_scale_mode,
+                sparse_allow_upsample=sparse_allow_upsample,
+                sparse_cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
+                sparse_lightglue_profile=sparse_lightglue_profile,
+                sparse_sp_detection_threshold=sparse_sp_detection_threshold,
+                sparse_sp_max_num_keypoints=sparse_sp_max_num_keypoints,
+                sparse_sp_nms_radius=sparse_sp_nms_radius,
+                sparse_ransac_method=sparse_secondary_ransac_method,
+                sparse_ransac_reproj_threshold=sparse_ransac_reproj_threshold,
+                sparse_min_inliers=sparse_min_inliers,
+                sparse_min_inlier_ratio=sparse_min_inlier_ratio,
+                sparse_save_final_vis=False,
+                sparse_save_final_vis_dir=(match_vis_dir if str(match_vis_dir).strip() else None),
+                sparse_save_final_vis_max=int(match_vis_max_save),
+            )
         gallery_img_cache = OrderedDict()
         gallery_img_cache_size = 512
+    else:
+        secondary_matcher = None
     orientation_mode_key = str(orientation_mode).lower()
     orientation_model = None
     use_orientation_model = bool(
@@ -298,6 +475,7 @@ def evaluate(
         "identity_h_fallback_count": 0,
         "out_of_bounds_count": 0,
         "projection_invalid_count": 0,
+        "secondary_takeover_count": 0,
         "retained_matches_sum": 0.0,
         "inliers_sum": 0.0,
         "inlier_ratio_sum": 0.0,
@@ -436,15 +614,19 @@ def evaluate(
                 orientation_stats["time_sum"] += query_vop_time
                 rotated_query_img = _rotate_query_tensor(query_img, orientation_posterior["top_angle_deg"])
                 t_match = time.perf_counter()
-                match_loc = matcher.est_center(
-                    gallery_img,
-                    rotated_query_img,
-                    gallery_center_loc_xy_list[top1_index],
-                    gallery_topleft_loc_xy_list[top1_index],
+                match_loc, match_info, _ = _run_match_with_optional_secondary(
+                    primary_matcher=matcher,
+                    secondary_matcher=secondary_matcher,
+                    image0=gallery_img,
+                    image1=rotated_query_img,
+                    center_xy0=gallery_center_loc_xy_list[top1_index],
+                    tl_xy0=gallery_topleft_loc_xy_list[top1_index],
                     yaw0=None,
                     yaw1=None,
                     rotate=0.0,
                     case_name=f"{query_case_prefix}_vop_prior_single",
+                    secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                    secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
                 )
                 query_match_time = time.perf_counter() - t_match
                 orientation_stats["match_time_sum"] += query_match_time
@@ -470,24 +652,43 @@ def evaluate(
                 best_match_inliers = -1
                 best_match_ratio = -1.0
                 best_cand_angle = None
+                best_matcher_used = matcher
                 total_topk_match_time = 0.0
                 for rank_j, cand_index in enumerate(sorted_indices):
                     cand_angle = float(candidate_angles[int(cand_index)])
                     rotated_query_img = _rotate_query_tensor(query_img, cand_angle)
                     t_match = time.perf_counter()
-                    candidate_match_loc = matcher.est_center(
-                        gallery_img,
-                        rotated_query_img,
-                        gallery_center_loc_xy_list[top1_index],
-                        gallery_topleft_loc_xy_list[top1_index],
-                        yaw0=None,
-                        yaw1=None,
-                        rotate=0.0,
-                        case_name=f"{query_case_prefix}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
-                        save_final_vis=False,
-                    )
+                    if bool(sparse_secondary_on_fallback) and str(sparse_secondary_mode).lower() == "per_candidate":
+                        candidate_match_loc, candidate_match_info, candidate_matcher_used = _run_match_with_optional_secondary(
+                            primary_matcher=matcher,
+                            secondary_matcher=secondary_matcher,
+                            image0=gallery_img,
+                            image1=rotated_query_img,
+                            center_xy0=gallery_center_loc_xy_list[top1_index],
+                            tl_xy0=gallery_topleft_loc_xy_list[top1_index],
+                            yaw0=None,
+                            yaw1=None,
+                            rotate=0.0,
+                            case_name=f"{query_case_prefix}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                            secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                            secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
+                        )
+                    else:
+                        candidate_match_loc = matcher.est_center(
+                            gallery_img,
+                            rotated_query_img,
+                            gallery_center_loc_xy_list[top1_index],
+                            gallery_topleft_loc_xy_list[top1_index],
+                            yaw0=None,
+                            yaw1=None,
+                            rotate=0.0,
+                            case_name=f"{query_case_prefix}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                            save_final_vis=False,
+                        )
+                        candidate_match_info = _extract_match_info(matcher) or {}
+                        candidate_matcher_used = matcher
                     total_topk_match_time += time.perf_counter() - t_match
-                    candidate_match_info = matcher.get_last_match_info() or {}
+                    candidate_match_info = candidate_match_info or {}
                     cand_kept = int(candidate_match_info.get("n_kept", 0))
                     cand_inliers = int(candidate_match_info.get("inliers", 0))
                     cand_ratio = float(cand_inliers) / float(max(cand_kept, 1))
@@ -497,9 +698,41 @@ def evaluate(
                         best_match_inliers = cand_inliers
                         best_match_ratio = cand_ratio
                         best_cand_angle = cand_angle
+                        best_matcher_used = candidate_matcher_used
+                if (
+                    bool(sparse_secondary_on_fallback)
+                    and str(sparse_secondary_mode).lower() == "final_only"
+                    and secondary_matcher is not None
+                    and _should_retry_sparse_with_secondary(best_match_info)
+                    and best_cand_angle is not None
+                ):
+                    primary_fallback_reason = None if not isinstance(best_match_info, dict) else best_match_info.get("fallback_reason")
+                    rotated_query_img = _rotate_query_tensor(query_img, best_cand_angle)
+                    secondary_match_loc = secondary_matcher.est_center(
+                        gallery_img,
+                        rotated_query_img,
+                        gallery_center_loc_xy_list[top1_index],
+                        gallery_topleft_loc_xy_list[top1_index],
+                        yaw0=None,
+                        yaw1=None,
+                        rotate=0.0,
+                        case_name=f"{query_case_prefix}_vop_prior_top{topk}_final_secondary_{best_cand_angle:.1f}",
+                        save_final_vis=False,
+                    )
+                    secondary_match_info = _extract_match_info(secondary_matcher) or {}
+                    if _accept_sparse_secondary_result(
+                        secondary_match_info,
+                        min_inliers=sparse_secondary_accept_min_inliers,
+                        min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
+                    ):
+                        best_match_loc = secondary_match_loc
+                        best_match_info = dict(secondary_match_info)
+                        best_match_info["secondary_retry_used"] = True
+                        best_match_info["primary_fallback_reason"] = primary_fallback_reason
+                        best_matcher_used = secondary_matcher
                 if save_match_vis and best_cand_angle is not None:
                     rotated_query_img = _rotate_query_tensor(query_img, best_cand_angle)
-                    match_loc = matcher.est_center(
+                    match_loc = best_matcher_used.est_center(
                         gallery_img,
                         rotated_query_img,
                         gallery_center_loc_xy_list[top1_index],
@@ -510,7 +743,7 @@ def evaluate(
                         case_name=f"{query_case_prefix}_vop_prior_top{topk}_selected_{best_cand_angle:.1f}",
                         save_final_vis=True,
                     )
-                    match_info = matcher.get_last_match_info() or {}
+                    match_info = _extract_match_info(best_matcher_used) or {}
                 else:
                     match_loc = best_match_loc
                     match_info = best_match_info
@@ -519,21 +752,24 @@ def evaluate(
                 hypotheses_evaluated = topk
             else:
                 t_match = time.perf_counter()
-                match_loc = matcher.est_center(
-                    gallery_img,
-                    query_img,
-                    gallery_center_loc_xy_list[top1_index],
-                    gallery_topleft_loc_xy_list[top1_index],
+                match_loc, match_info, _ = _run_match_with_optional_secondary(
+                    primary_matcher=matcher,
+                    secondary_matcher=secondary_matcher,
+                    image0=gallery_img,
+                    image1=query_img,
+                    center_xy0=gallery_center_loc_xy_list[top1_index],
+                    tl_xy0=gallery_topleft_loc_xy_list[top1_index],
                     yaw0=sparse_yaw0,
                     yaw1=sparse_yaw1,
                     rotate=rotate,
                     case_name=f"{query_case_prefix}_baseline_sparse",
-                    save_final_vis=save_match_vis,
+                    secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                    secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
                 )
                 query_match_time = time.perf_counter() - t_match
 
             if match_info is None:
-                match_info = matcher.get_last_match_info()
+                match_info = _extract_match_info(matcher)
 
             if orientation_posterior is not None:
                 orientation_stats["count"] += 1
@@ -580,6 +816,7 @@ def evaluate(
             final_match_stats["identity_h_fallback_count"] += int(bool(match_info_dict.get("identity_h_fallback", False)))
             final_match_stats["out_of_bounds_count"] += int(bool(match_info_dict.get("out_of_bounds", False)))
             final_match_stats["projection_invalid_count"] += int(bool(match_info_dict.get("projection_invalid", False)))
+            final_match_stats["secondary_takeover_count"] += int(bool(match_info_dict.get("secondary_retry_used", False)))
             final_match_stats["retained_matches_sum"] += float(match_info_dict.get("n_kept", 0))
             final_match_stats["inliers_sum"] += float(match_info_dict.get("inliers", 0))
             final_match_stats["inlier_ratio_sum"] += float(match_info_dict.get("inlier_ratio", 0.0))
@@ -715,6 +952,18 @@ def evaluate(
             float(final_match_stats["matcher_time_sum"]) / float(final_query_count),
             float(final_match_stats["total_time_sum"]) / float(final_query_count),
         )
+        if bool(sparse_secondary_on_fallback):
+            secondary_count, secondary_ratio = _format_count_ratio(final_match_stats["secondary_takeover_count"], final_query_count)
+            logger.info(
+                "双路径回退统计(按查询汇总): secondary_takeover=%d(%.2f%%) primary_method=%s secondary_method=%s mode=%s accept_min_inliers=%d accept_min_inlier_ratio=%.4f",
+                secondary_count,
+                secondary_ratio,
+                str(sparse_ransac_method),
+                str(sparse_secondary_ransac_method),
+                str(sparse_secondary_mode),
+                int(sparse_secondary_accept_min_inliers),
+                float(sparse_secondary_accept_min_inlier_ratio),
+            )
     if orientation_stats["count"] > 0:
         orientation_count = max(int(orientation_stats["count"]), 1)
         logger.info(

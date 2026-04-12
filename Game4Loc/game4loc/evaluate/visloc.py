@@ -225,6 +225,101 @@ def _to_jsonable_candidate_record(record):
     return output
 
 
+def _extract_match_info(matcher):
+    if matcher is None:
+        return None
+    if hasattr(matcher, "get_last_match_info"):
+        return matcher.get_last_match_info()
+    return getattr(matcher, "last_match_info", None)
+
+
+def _should_retry_sparse_with_secondary(match_info):
+    if not isinstance(match_info, dict):
+        return True
+    if bool(match_info.get("fallback_to_center", False)):
+        return True
+    if bool(match_info.get("identity_h_fallback", False)):
+        return True
+    reason = str(match_info.get("fallback_reason", "")).strip().lower()
+    return reason in {"all_failed", "low_match", "low_quality", "projection_invalid", "out_of_bounds"}
+
+
+def _accept_sparse_secondary_result(match_info, min_inliers=0, min_inlier_ratio=0.0):
+    if _should_retry_sparse_with_secondary(match_info):
+        return False
+    if not isinstance(match_info, dict):
+        return False
+    inliers = int(match_info.get("inliers", 0))
+    inlier_ratio = float(match_info.get("inlier_ratio", 0.0))
+    if inliers < int(min_inliers):
+        return False
+    if inlier_ratio < float(min_inlier_ratio):
+        return False
+    return True
+
+
+def _run_match_with_optional_secondary(
+    primary_matcher,
+    secondary_matcher,
+    image0,
+    image1,
+    center_xy0,
+    tl_xy0,
+    yaw0=None,
+    yaw1=None,
+    rotate=True,
+    case_name=None,
+    secondary_accept_min_inliers=0,
+    secondary_accept_min_inlier_ratio=0.0,
+):
+    primary_loc = primary_matcher.est_center(
+        image0,
+        image1,
+        center_xy0,
+        tl_xy0,
+        yaw0=yaw0,
+        yaw1=yaw1,
+        rotate=rotate,
+        case_name=case_name,
+    )
+    primary_info = _extract_match_info(primary_matcher)
+    chosen_loc = primary_loc
+    chosen_info = dict(primary_info) if isinstance(primary_info, dict) else primary_info
+    chosen_matcher = primary_matcher
+    secondary_retry_used = False
+
+    if secondary_matcher is not None and _should_retry_sparse_with_secondary(primary_info):
+        secondary_case_name = None if case_name is None else f"{case_name}_secondary"
+        secondary_loc = secondary_matcher.est_center(
+            image0,
+            image1,
+            center_xy0,
+            tl_xy0,
+            yaw0=yaw0,
+            yaw1=yaw1,
+            rotate=rotate,
+            case_name=secondary_case_name,
+            save_final_vis=False,
+        )
+        secondary_info = _extract_match_info(secondary_matcher)
+        if _accept_sparse_secondary_result(
+            secondary_info,
+            min_inliers=secondary_accept_min_inliers,
+            min_inlier_ratio=secondary_accept_min_inlier_ratio,
+        ):
+            chosen_loc = secondary_loc
+            chosen_info = dict(secondary_info) if isinstance(secondary_info, dict) else secondary_info
+            chosen_matcher = secondary_matcher
+            secondary_retry_used = True
+
+    if isinstance(chosen_info, dict):
+        chosen_info = dict(chosen_info)
+        chosen_info["secondary_retry_used"] = bool(secondary_retry_used)
+        chosen_info["primary_fallback_reason"] = None if not isinstance(primary_info, dict) else primary_info.get("fallback_reason")
+
+    return chosen_loc, chosen_info, chosen_matcher
+
+
 def predict(train_config, model, dataloader):
     
     model.eval()
@@ -294,6 +389,18 @@ def evaluate(
         sparse_allow_upsample=False,
         sparse_cross_scale_dedup_radius=0.0,
         sparse_lightglue_profile="current",
+        sparse_sp_detection_threshold=0.0003,
+        sparse_sp_max_num_keypoints=4096,
+        sparse_sp_nms_radius=4,
+        sparse_ransac_method="RANSAC",
+        sparse_secondary_on_fallback=False,
+        sparse_secondary_ransac_method="RANSAC",
+        sparse_secondary_mode="per_candidate",
+        sparse_secondary_accept_min_inliers=0,
+        sparse_secondary_accept_min_inlier_ratio=0.0,
+        sparse_ransac_reproj_threshold=20.0,
+        sparse_min_inliers=15,
+        sparse_min_inlier_ratio=0.001,
         sparse_save_final_vis=False,
         angle_experiment=False,
         orientation_checkpoint="",
@@ -312,8 +419,8 @@ def evaluate(
     if logger is not None:
         logger.info("开始评估：提取特征并计算匹配分数")
         logger.debug(
-            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_scales=%s, sparse_multi_scale_mode=%s, sparse_allow_upsample=%s, sparse_cross_scale_dedup_radius=%.2f, sparse_lightglue_profile=%s, sparse_save_final_vis=%s, angle_experiment=%s",
-            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_scales, sparse_multi_scale_mode, sparse_allow_upsample, float(sparse_cross_scale_dedup_radius), sparse_lightglue_profile, sparse_save_final_vis, angle_experiment,
+            "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_scales=%s, sparse_multi_scale_mode=%s, sparse_allow_upsample=%s, sparse_cross_scale_dedup_radius=%.2f, sparse_lightglue_profile=%s, sparse_sp_det=%.6f, sparse_sp_max_kpts=%d, sparse_sp_nms=%d, sparse_ransac_method=%s, sparse_secondary_on_fallback=%s, sparse_secondary_ransac_method=%s, sparse_secondary_mode=%s, sparse_secondary_accept_min_inliers=%d, sparse_secondary_accept_min_inlier_ratio=%.6f, sparse_ransac_thresh=%.3f, sparse_min_inliers=%d, sparse_min_inlier_ratio=%.6f, sparse_save_final_vis=%s, angle_experiment=%s",
+            ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_scales, sparse_multi_scale_mode, sparse_allow_upsample, float(sparse_cross_scale_dedup_radius), sparse_lightglue_profile, float(sparse_sp_detection_threshold), int(sparse_sp_max_num_keypoints), int(sparse_sp_nms_radius), sparse_ransac_method, bool(sparse_secondary_on_fallback), sparse_secondary_ransac_method, sparse_secondary_mode, int(sparse_secondary_accept_min_inliers), float(sparse_secondary_accept_min_inlier_ratio), float(sparse_ransac_reproj_threshold), int(sparse_min_inliers), float(sparse_min_inlier_ratio), sparse_save_final_vis, angle_experiment,
         )
     else:
         print("Extract Features and Compute Scores:")
@@ -354,7 +461,40 @@ def evaluate(
             sparse_allow_upsample=sparse_allow_upsample,
             sparse_cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
             sparse_lightglue_profile=sparse_lightglue_profile,
+            sparse_sp_detection_threshold=sparse_sp_detection_threshold,
+            sparse_sp_max_num_keypoints=sparse_sp_max_num_keypoints,
+            sparse_sp_nms_radius=sparse_sp_nms_radius,
+            sparse_ransac_method=sparse_ransac_method,
+            sparse_ransac_reproj_threshold=sparse_ransac_reproj_threshold,
+            sparse_min_inliers=sparse_min_inliers,
+            sparse_min_inlier_ratio=sparse_min_inlier_ratio,
             sparse_save_final_vis=sparse_save_final_vis,
+        )
+    secondary_matcher = None
+    if (
+        with_match
+        and match_mode == "sparse"
+        and bool(sparse_secondary_on_fallback)
+    ):
+        secondary_matcher = GimDKM(
+            device=config.device,
+            match_mode=match_mode,
+            logger=logger,
+            sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
+            sparse_use_multi_scale=sparse_use_multi_scale,
+            sparse_scales=sparse_scales,
+            sparse_multi_scale_mode=sparse_multi_scale_mode,
+            sparse_allow_upsample=sparse_allow_upsample,
+            sparse_cross_scale_dedup_radius=sparse_cross_scale_dedup_radius,
+            sparse_lightglue_profile=sparse_lightglue_profile,
+            sparse_sp_detection_threshold=sparse_sp_detection_threshold,
+            sparse_sp_max_num_keypoints=sparse_sp_max_num_keypoints,
+            sparse_sp_nms_radius=sparse_sp_nms_radius,
+            sparse_ransac_method=sparse_secondary_ransac_method,
+            sparse_ransac_reproj_threshold=sparse_ransac_reproj_threshold,
+            sparse_min_inliers=sparse_min_inliers,
+            sparse_min_inlier_ratio=sparse_min_inlier_ratio,
+            sparse_save_final_vis=False,
         )
     orientation_mode_key = str(orientation_mode).lower()
     orientation_model = None
@@ -496,6 +636,7 @@ def evaluate(
         "inliers": [],
         "inlier_ratios": [],
         "hypotheses_evaluated": [],
+        "secondary_takeover_count": 0,
     }
     confidence_dump_records = [] if str(confidence_dump_path).strip() else None
 
@@ -515,6 +656,7 @@ def evaluate(
         match_info = None
         angle_results = []
         orientation_posterior = None
+        matcher_used = matcher if with_match else None
         sparse_yaw0 = None
         sparse_yaw1 = None
         hypotheses_evaluated = 0
@@ -545,7 +687,9 @@ def evaluate(
                 orientation_stats["time_sum"] += time.perf_counter() - t_orientation
                 rotated_query_sample = _rotate_query_tensor(query_sample, orientation_posterior["top_angle_deg"])
                 t_match = time.perf_counter()
-                match_loc_lon_lat = matcher.est_center(
+                match_loc_lon_lat, match_info, matcher_used = _run_match_with_optional_secondary(
+                    matcher,
+                    secondary_matcher,
                     gallery_sample,
                     rotated_query_sample,
                     gallery_center_lon_lat,
@@ -554,6 +698,8 @@ def evaluate(
                     yaw1=None,
                     rotate=0.0,
                     case_name=f"{query_list[i]}_vop_prior_single",
+                    secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                    secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
                 )
                 orientation_stats["match_time_sum"] += time.perf_counter() - t_match
                 orientation_stats["hypothesis_sum"] += 1
@@ -580,6 +726,8 @@ def evaluate(
                 best_match_loc_lon_lat = None
                 best_match_info = None
                 best_match_record = None
+                best_matcher_used = matcher
+                best_match_angle = None
                 best_match_inliers = -1
                 best_match_ratio = -1.0
                 total_topk_match_time = 0.0
@@ -590,18 +738,36 @@ def evaluate(
                     cand_prob = float(orientation_posterior["probs"][int(cand_index)])
                     rotated_query_sample = _rotate_query_tensor(query_sample, cand_angle)
                     t_match = time.perf_counter()
-                    candidate_loc_lon_lat = matcher.est_center(
-                        gallery_sample,
-                        rotated_query_sample,
-                        gallery_center_lon_lat,
-                        gallery_topleft_lon_lat,
-                        yaw0=None,
-                        yaw1=None,
-                        rotate=0.0,
-                        case_name=f"{query_list[i]}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
-                    )
+                    if bool(sparse_secondary_on_fallback) and str(sparse_secondary_mode).lower() == "per_candidate":
+                        candidate_loc_lon_lat, candidate_match_info, candidate_matcher_used = _run_match_with_optional_secondary(
+                            matcher,
+                            secondary_matcher,
+                            gallery_sample,
+                            rotated_query_sample,
+                            gallery_center_lon_lat,
+                            gallery_topleft_lon_lat,
+                            yaw0=None,
+                            yaw1=None,
+                            rotate=0.0,
+                            case_name=f"{query_list[i]}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                            secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                            secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
+                        )
+                    else:
+                        candidate_loc_lon_lat = matcher.est_center(
+                            gallery_sample,
+                            rotated_query_sample,
+                            gallery_center_lon_lat,
+                            gallery_topleft_lon_lat,
+                            yaw0=None,
+                            yaw1=None,
+                            rotate=0.0,
+                            case_name=f"{query_list[i]}_vop_prior_top{topk}_{rank_j}_{cand_angle:.1f}",
+                        )
+                        candidate_match_info = _extract_match_info(matcher) or {}
+                        candidate_matcher_used = matcher
                     total_topk_match_time += time.perf_counter() - t_match
-                    candidate_match_info = matcher.get_last_match_info() or {}
+                    candidate_match_info = candidate_match_info or {}
                     cand_kept = int(candidate_match_info.get("n_kept", 0))
                     cand_inliers = int(candidate_match_info.get("inliers", 0))
                     cand_ratio = float(cand_inliers) / float(max(cand_kept, 1))
@@ -629,10 +795,46 @@ def evaluate(
                         best_match_loc_lon_lat = candidate_loc_lon_lat
                         best_match_info = dict(candidate_match_info)
                         best_match_record = dict(candidate_record)
+                        best_matcher_used = candidate_matcher_used
+                        best_match_angle = cand_angle
                         best_match_inliers = cand_inliers
                         best_match_ratio = cand_ratio
+                if (
+                    bool(sparse_secondary_on_fallback)
+                    and str(sparse_secondary_mode).lower() == "final_only"
+                    and secondary_matcher is not None
+                    and _should_retry_sparse_with_secondary(best_match_info)
+                    and best_match_angle is not None
+                ):
+                    primary_fallback_reason = None if not isinstance(best_match_info, dict) else best_match_info.get("fallback_reason")
+                    rotated_query_sample = _rotate_query_tensor(query_sample, best_match_angle)
+                    secondary_loc_lon_lat = secondary_matcher.est_center(
+                        gallery_sample,
+                        rotated_query_sample,
+                        gallery_center_lon_lat,
+                        gallery_topleft_lon_lat,
+                        yaw0=None,
+                        yaw1=None,
+                        rotate=0.0,
+                        case_name=f"{query_list[i]}_vop_prior_top{topk}_final_secondary_{best_match_angle:.1f}",
+                        save_final_vis=False,
+                    )
+                    secondary_match_info = _extract_match_info(secondary_matcher) or {}
+                    if _accept_sparse_secondary_result(
+                        secondary_match_info,
+                        min_inliers=sparse_secondary_accept_min_inliers,
+                        min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
+                    ):
+                        best_match_loc_lon_lat = None
+                        if secondary_loc_lon_lat is not None:
+                            best_match_loc_lon_lat = secondary_loc_lon_lat
+                        best_match_info = dict(secondary_match_info)
+                        best_match_info["secondary_retry_used"] = True
+                        best_match_info["primary_fallback_reason"] = primary_fallback_reason
+                        best_matcher_used = secondary_matcher
                 match_loc_lon_lat = best_match_loc_lon_lat
                 match_info = best_match_info
+                matcher_used = best_matcher_used
                 if use_confidence_verifier and len(candidate_records) > 0:
                     t_conf = time.perf_counter()
                     selected_conf_record = select_candidate_with_confidence(candidate_records, confidence_verifier)
@@ -684,7 +886,9 @@ def evaluate(
                 orientation_stats["top_prob_sum"] += float(orientation_posterior["top_prob"])
             else:
                 t_match = time.perf_counter()
-                match_loc_lon_lat = matcher.est_center(
+                match_loc_lon_lat, match_info, matcher_used = _run_match_with_optional_secondary(
+                    matcher,
+                    secondary_matcher,
                     gallery_sample,
                     query_sample,
                     gallery_center_lon_lat,
@@ -693,15 +897,14 @@ def evaluate(
                     yaw1=sparse_yaw1,
                     rotate=rotate,
                     case_name=query_list[i],
+                    secondary_accept_min_inliers=sparse_secondary_accept_min_inliers,
+                    secondary_accept_min_inlier_ratio=sparse_secondary_accept_min_inlier_ratio,
                 )
                 orientation_stats["match_time_sum"] += time.perf_counter() - t_match
             if match_info is None:
-                if hasattr(matcher, "get_last_match_info"):
-                    match_info = matcher.get_last_match_info()
-                else:
-                    match_info = getattr(matcher, "last_match_info", None)
-            if hasattr(matcher, "get_last_angle_results"):
-                angle_results = matcher.get_last_angle_results()
+                match_info = _extract_match_info(matcher_used)
+            if matcher_used is not None and hasattr(matcher_used, "get_last_angle_results"):
+                angle_results = matcher_used.get_last_angle_results()
             if hypotheses_evaluated <= 0:
                 hypotheses_evaluated = max(
                     1,
@@ -797,6 +1000,8 @@ def evaluate(
                     fineloc_stats["out_of_bounds_count"] += 1
                 if bool(match_info.get("projection_invalid", False)):
                     fineloc_stats["projection_invalid_count"] += 1
+                if bool(match_info.get("secondary_retry_used", False)):
+                    fineloc_stats["secondary_takeover_count"] += 1
         if with_match and isinstance(match_info, dict):
             annotate_final_match_visualization(
                 match_info.get("final_vis_path"),
@@ -1026,6 +1231,17 @@ def evaluate(
                 mean_match_time,
                 mean_total_fineloc_time,
             )
+            if bool(sparse_secondary_on_fallback):
+                logger.info(
+                    "FineLoc 双路径回退统计: secondary_takeover=%d(%.2f%%) primary_method=%s secondary_method=%s mode=%s accept_min_inliers=%d accept_min_inlier_ratio=%.4f",
+                    int(fineloc_stats["secondary_takeover_count"]),
+                    float(fineloc_stats["secondary_takeover_count"]) * 100.0 / float(max(query_num, 1)),
+                    str(sparse_ransac_method),
+                    str(sparse_secondary_ransac_method),
+                    str(sparse_secondary_mode),
+                    int(sparse_secondary_accept_min_inliers),
+                    float(sparse_secondary_accept_min_inlier_ratio),
+                )
             if confidence_stats["count"] > 0:
                 confidence_count = max(int(confidence_stats["count"]), 1)
                 logger.info(
