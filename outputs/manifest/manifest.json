@@ -1,0 +1,311 @@
+{
+  "modules": [
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/input/uav_input_tile.png",
+      "category": "input",
+      "description": "Real UAV query tile used in the main VOP pipeline example.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Drag into the leftmost input position in the paper figure."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/input/satellite_input_tile.png",
+      "category": "input",
+      "description": "Real retrieved satellite tile used in the main VOP pipeline example.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Drag into the gallery/top-1 input position."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/input/input_pair_q_g.png",
+      "category": "input",
+      "description": "Combined real input pair module with q/g labels.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as a compact q-g pair block in PPT/Illustrator."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/input/final_localization_basemap.png",
+      "category": "input",
+      "description": "Real satellite basemap with the final localization pin position.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/01_5_005_022.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the base map before adding extra result annotations."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/backbone/frozen_vit_base_backbone_box.png",
+      "category": "backbone",
+      "description": "Frozen ViT-Base backbone box with real input thumbnails and real feature maps.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | /home/lcy/Workplace/GTA-UAV/Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the backbone stage in the method figure."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/backbone/learnable_vop_module_box.png",
+      "category": "backbone",
+      "description": "Learnable VOP module outer box with real pairwise feature maps and real posterior.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/topk_analysis/cache_same_area_full.json",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the central VOP block in the method figure."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/verification/superpoint_lightglue_geometric_verification_box.png",
+      "category": "verification",
+      "description": "Sparse verification box with real SP+LG match visual.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the downstream verification stage."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/feature_map_f_q.png",
+      "category": "features",
+      "description": "Real backbone feature map F_q visualized by PCA projection.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as an individual feature tile or within the backbone box."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/feature_map_f_g.png",
+      "category": "features",
+      "description": "Real backbone feature map F_g visualized by PCA projection.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | /home/lcy/Workplace/GTA-UAV/Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as an individual feature tile or within the backbone box."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/feature_map_f_q_rot.png",
+      "category": "features",
+      "description": "Real rotated query feature map F_{q,rot} after VOP rotation.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use before the pairwise fusion stage."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/fusion_block_f_g.png",
+      "category": "features",
+      "description": "Real encoded feature tile [F_g] used inside the VOP pairwise head.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as one of the four pairwise fusion inputs."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/fusion_block_f_q_rot.png",
+      "category": "features",
+      "description": "Real encoded feature tile [F_{q,rot}] used inside the VOP pairwise head.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as one of the four pairwise fusion inputs."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/fusion_block_f_g_mul_f_q_rot.png",
+      "category": "features",
+      "description": "Real multiplicative fusion tile [F_g ⊙ F_{q,rot}].",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as one of the four pairwise fusion inputs."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/fusion_block_abs_f_g_minus_f_q_rot.png",
+      "category": "features",
+      "description": "Real absolute-difference fusion tile [|F_g - F_{q,rot}|].",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as one of the four pairwise fusion inputs."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/feature_concatenation_fusion_symbol.png",
+      "category": "features",
+      "description": "Reusable concat / fusion symbol module for the four VOP feature inputs.",
+      "source_file": "redrawn vector icon matched to the paper palette",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Place between the four feature tiles and the prediction head."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/conv_relu_gap_head_box.png",
+      "category": "features",
+      "description": "Prediction head module showing 1×1 Conv → ReLU → GAP.",
+      "source_file": "real fusion preview from /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the VOP prediction head."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/features/candidate_angles_rotation_module.png",
+      "category": "features",
+      "description": "Rotation operation block based on the real UAV query tile.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use to explain 36 candidate angles and feature rotation."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/posterior/posterior_probability_distribution.png",
+      "category": "posterior",
+      "description": "Real posterior distribution on the main sample with highlighted top-4 angles.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/topk_analysis/cache_same_area_full.json | /home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/topk_analysis/posterior_k4.json",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the posterior module in the pipeline figure."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/posterior/topk_selected_angles.png",
+      "category": "posterior",
+      "description": "Real top-k selected angle badges from the main sample.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/work_dir/vop/topk_analysis/posterior_k4.json",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use after the posterior module to denote selected hypotheses."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/posterior/soft_orientation_target.png",
+      "category": "posterior",
+      "description": "Soft orientation target from the real teacher example.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/teacher_signal_example_20260414/teacher_pair_soft_orientation_target_v2_smooth.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use in training supervision figures."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/posterior/useful_angle_set_module.png",
+      "category": "posterior",
+      "description": "Useful-angle set module cropped from the real mechanism figure.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/vop_shortpaper_20260415_review/fig04a_angle_surface_mechanism.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use to explain multimodal useful-angle structure."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/posterior/pair_confidence_weight_curve.png",
+      "category": "posterior",
+      "description": "Pair-confidence weighting curve derived from the real training recipe.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/train_vop.py",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use alongside useful-angle supervision in the training section."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/verification/sparse_no_vop_match_visual.png",
+      "category": "verification",
+      "description": "Real SP+LG match visualization without VOP guidance on the main sample.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the plain sparse baseline visual."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/verification/ours_vop_guided_match_visual.png",
+      "category": "verification",
+      "description": "Real VOP-guided SP+LG match visualization on the main sample.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png | best angle +20",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the VOP-guided verification visual."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/verification/match_visual_comparison_dual.png",
+      "category": "verification",
+      "description": "Side-by-side comparison between no-VOP sparse matching and VOP-guided matching.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/drone/images/03_0079.JPG | /home/lcy/Workplace/GTA-UAV/Game4Loc/data/UAV_VisLoc_dataset/satellite/03_6_010_003.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use when a compact comparison panel is needed."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/results/final_localization_result.png",
+      "category": "results",
+      "description": "Real final localization result with the actual projected pin on the satellite tile.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/pair_vop_assets_20260414/pair01_vop_summary.json",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the final result panel."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/results/accuracy_efficiency_tradeoff_plot.png",
+      "category": "results",
+      "description": "Accuracy-efficiency tradeoff plot from the current paper figure set.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/vop_shortpaper_20260411/fig02b_dis1_runtime_tradeoff_sp_lg_frontier.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as the standalone quantitative comparison plot."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/results/localization_error_curve.png",
+      "category": "results",
+      "description": "Real teacher localization error curve on the Paper7 pair.",
+      "source_file": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/teacher_signal_example_20260414/teacher_pair_localization_error_curve.png",
+      "derived_from_real_image": true,
+      "transparent_background": true,
+      "recommended_usage": "Use as a supervision / motivation plot."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/uav_topview_icon.png",
+      "category": "icons",
+      "description": "Reusable vectorized UAV top-view icon.",
+      "source_file": "redrawn vector icon because no local UAV icon asset exists",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use as a small visual cue in diagrams or legends."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/red_pin_icon.png",
+      "category": "icons",
+      "description": "Reusable red localization pin icon.",
+      "source_file": "redrawn vector icon matched to the paper palette",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use on top of localization maps or result panels."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/arrow_right_icon.png",
+      "category": "icons",
+      "description": "Reusable straight arrow icon.",
+      "source_file": "redrawn vector icon matched to the paper palette",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use between adjacent modules in PowerPoint or Illustrator."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/rotation_arrow_icon.png",
+      "category": "icons",
+      "description": "Reusable rotation / 36-angle icon.",
+      "source_file": "redrawn vector icon matched to the paper palette",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use near rotation or candidate-angle annotations."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/topk_badge.png",
+      "category": "icons",
+      "description": "Reusable top-k badge.",
+      "source_file": "redrawn vector badge",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use to annotate selected hypotheses."
+    },
+    {
+      "file_name": "/home/lcy/Workplace/GTA-UAV/outputs/png_modules/icons/softmax_badge.png",
+      "category": "icons",
+      "description": "Reusable softmax badge.",
+      "source_file": "redrawn vector badge",
+      "derived_from_real_image": false,
+      "transparent_background": true,
+      "recommended_usage": "Use between the head and the posterior distribution."
+    }
+  ],
+  "missing_inputs": []
+}

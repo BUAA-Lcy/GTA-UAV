@@ -7,7 +7,7 @@ import argparse
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
@@ -30,7 +30,8 @@ REPO_ROOT = GAME4LOC_DIR.parent
 LOG_DIR = GAME4LOC_DIR / "Log"
 DATA_DIR = GAME4LOC_DIR / "data"
 WORK_DIR = GAME4LOC_DIR / "work_dir"
-PAPER_PATH = REPO_ROOT / "Paper.md"
+PAPER_PATH = REPO_ROOT / "Paper.zh-CN.md"
+SUPERVISION_PAPER_PATH = REPO_ROOT / "Paper.md"
 
 
 @dataclass(frozen=True)
@@ -62,58 +63,52 @@ PALETTE = {
     "useful_fill": "#D8EED8",
     "loftr": "#8F6B2E",
     "top2": "#5C948A",
+    "callout": "#A85D2A",
+    "callout_green": "#2E6B3F",
 }
 
 
 VISLOC_0304_METHODS = [
     FigureMethod(
         name="dense DKM, no rotate",
-        short_label="Dense",
+        short_label="DKM",
         log_path=None,
         dataset="03/04",
         color=PALETTE["dense"],
         marker="^",
-        label_dx=-26,
+        label_dx=-24,
         label_dy=4,
     ),
     FigureMethod(
-        name="sparse + rotate90 + inlier-count",
-        short_label="Rotate",
+        name="LoFTR",
+        short_label="LoFTR",
         log_path=None,
         dataset="03/04",
-        color=PALETTE["rotate"],
-        label_dx=-26,
-        label_dy=5,
+        color=PALETTE["loftr"],
+        marker="D",
+        label_dx=6,
+        label_dy=6,
     ),
     FigureMethod(
-        name="current teacher, top-2",
-        short_label="Top-2",
+        name="SuperPoint",
+        short_label="Sparse",
         log_path=None,
         dataset="03/04",
-        color=PALETTE["top2"],
-        label_dx=-18,
-        label_dy=-12,
-    ),
-    FigureMethod(
-        name="current teacher, top-4",
-        short_label="Top-4",
-        log_path=None,
-        dataset="03/04",
-        color=PALETTE["teacher"],
-        label_dx=-14,
-        label_dy=8,
-    ),
-    FigureMethod(
-        name="clean30, top-4",
-        short_label="Clean30",
-        log_path=None,
-        dataset="03/04",
-        color=PALETTE["clean30"],
-        label_dx=5,
+        color=PALETTE["sparse"],
+        label_dx=6,
         label_dy=-14,
     ),
     FigureMethod(
-        name="useful5-weight30, top-4 (ours)",
+        name="SuperPoint + Rotate",
+        short_label="Sparse+Rotate",
+        log_path=None,
+        dataset="03/04",
+        color=PALETTE["rotate"],
+        label_dx=6,
+        label_dy=6,
+    ),
+    FigureMethod(
+        name="Ours (SuperPoint + VOP)",
         short_label="Ours",
         log_path=None,
         dataset="03/04",
@@ -127,7 +122,7 @@ VISLOC_0304_METHODS = [
 GTA_METHODS = [
     FigureMethod(
         name="dense DKM",
-        short_label="Dense",
+        short_label="DKM",
         log_path=None,
         dataset="GTA same-area",
         color=PALETTE["dense"],
@@ -145,8 +140,8 @@ GTA_METHODS = [
         label_dy=-14,
     ),
     FigureMethod(
-        name="sparse + rotate90 + inlier-count",
-        short_label="Rotate",
+        name="sparse + rotate90",
+        short_label="Sparse+Rotate",
         log_path=None,
         dataset="GTA same-area",
         color=PALETTE["rotate"],
@@ -164,7 +159,7 @@ GTA_METHODS = [
         label_dy=6,
     ),
     FigureMethod(
-        name="sparse + VOP",
+        name="sparse + VOP (ours)",
         short_label="Ours",
         log_path=None,
         dataset="GTA same-area",
@@ -345,6 +340,15 @@ def extract_markdown_table_after_heading(text: str, heading_fragment: str) -> Li
     return rows
 
 
+def get_row_name(row: Mapping[str, str]) -> str | None:
+    for key in ("Variant", "变体", "方法"):
+        if key in row:
+            value = row[key].strip()
+            if value:
+                return value
+    return None
+
+
 def parse_numeric_cell(value: str) -> float:
     cleaned = value.strip().replace("%", "").replace("s", "")
     return float(cleaned)
@@ -375,7 +379,7 @@ def convert_table_row_to_metrics(row: Mapping[str, str]) -> Dict[str, float]:
     }
     metrics: Dict[str, float] = {}
     for header, raw_value in row.items():
-        if header.strip().lower() == "variant":
+        if header.strip().lower() in {"variant", "变体", "方法"}:
             continue
         metric_key = header_map.get(header.strip().lower())
         if metric_key is None:
@@ -384,9 +388,15 @@ def convert_table_row_to_metrics(row: Mapping[str, str]) -> Dict[str, float]:
     return metrics
 
 
-def load_table_metrics(table_heading_fragment: str) -> Dict[str, Dict[str, float]]:
-    rows = extract_markdown_table_after_heading(read_text(PAPER_PATH), table_heading_fragment)
-    return {row["Variant"]: convert_table_row_to_metrics(row) for row in rows}
+def load_table_metrics(table_heading_fragment: str, paper_path: Path = PAPER_PATH) -> Dict[str, Dict[str, float]]:
+    rows = extract_markdown_table_after_heading(read_text(paper_path), table_heading_fragment)
+    metrics_map: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        row_name = get_row_name(row)
+        if not row_name:
+            continue
+        metrics_map[row_name] = convert_table_row_to_metrics(row)
+    return metrics_map
 
 
 def parse_summary_metrics(summary_path: Path) -> Dict[str, float]:
@@ -413,12 +423,12 @@ def parse_summary_metrics(summary_path: Path) -> Dict[str, float]:
 
 
 def build_paper_metrics_bundle() -> Dict[str, Dict[str, Dict[str, float]]]:
-    visloc_metrics = load_table_metrics("8.2 VisLoc Table")
+    visloc_metrics = load_table_metrics("8.2 UAV-VisLoc", PAPER_PATH)
     gta_metrics = load_table_metrics("8.1 GTA Same-Area")
     gta_detail_sources = {
         "sparse": LOG_DIR / "vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2000.log",
-        "sparse + rotate90 + inlier-count": LOG_DIR / "vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2008.log",
-        "sparse + VOP": LOG_DIR / "vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2028.log",
+        "sparse + rotate90": LOG_DIR / "vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2008.log",
+        "sparse + VOP (ours)": LOG_DIR / "vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2028.log",
     }
     for method_name, log_path in gta_detail_sources.items():
         detailed_metrics = parse_log_metrics(log_path)
@@ -427,10 +437,11 @@ def build_paper_metrics_bundle() -> Dict[str, Dict[str, Dict[str, float]]]:
     gta_metrics["LoFTR"] = parse_summary_metrics(
         WORK_DIR / "loftr_baseline_runs" / "gta_samearea_loftr_20260411" / "summary.md"
     )
+    supervision_metrics = load_table_metrics("8.2 VisLoc Table", SUPERVISION_PAPER_PATH)
     return {
         "03/04": visloc_metrics,
         "GTA same-area": gta_metrics,
-        "supervision": {method.name: visloc_metrics[method.name] for method in SUPERVISION_METHODS},
+        "supervision": {method.name: supervision_metrics[method.name] for method in SUPERVISION_METHODS},
     }
 
 
@@ -567,6 +578,108 @@ def annotate_scatter_point(ax: plt.Axes, x: float, y: float, label: str, color: 
         fontweight="bold" if label == "Ours" else "normal",
         path_effects=[pe.withStroke(linewidth=3, foreground="white", alpha=0.92)],
     )
+
+
+def runtime_to_fps(runtime_s: float) -> float:
+    if not math.isfinite(runtime_s) or runtime_s <= 0:
+        return math.nan
+    return 1.0 / runtime_s
+
+
+def compute_pareto_frontier(points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    valid_points = [(x, y) for x, y in points if math.isfinite(x) and math.isfinite(y)]
+    if not valid_points:
+        return []
+
+    sorted_points = sorted(valid_points, key=lambda item: item[0])
+    frontier: List[Tuple[float, float]] = []
+    best_dis1 = math.inf
+    for fps, dis1 in reversed(sorted_points):
+        if dis1 < best_dis1 - 1e-9:
+            frontier.append((fps, dis1))
+            best_dis1 = dis1
+    frontier.reverse()
+    return frontier
+
+
+def draw_sparse_dense_frontier(
+    ax: plt.Axes,
+    frontier_points: Sequence[Tuple[float, float]],
+    *,
+    label_text: str = "Empirical sparse-to-dense frontier",
+    fit_mode: str = "quadratic",
+    label_fraction: float = 0.48,
+    label_y_offset: float = 3.0,
+) -> None:
+    if len(frontier_points) < 2:
+        return
+
+    frontier_points = sorted(frontier_points, key=lambda item: item[0])
+    log_frontier_fps = np.log10([point[0] for point in frontier_points])
+    frontier_dis1 = np.array([point[1] for point in frontier_points], dtype=float)
+
+    if fit_mode == "piecewise":
+        sampled_log_segments = []
+        sampled_dis_segments = []
+        for idx in range(len(frontier_points) - 1):
+            is_last = idx == len(frontier_points) - 2
+            sampled_log_segments.append(
+                np.linspace(log_frontier_fps[idx], log_frontier_fps[idx + 1], 60, endpoint=is_last)
+            )
+            sampled_dis_segments.append(
+                np.linspace(frontier_dis1[idx], frontier_dis1[idx + 1], 60, endpoint=is_last)
+            )
+        sampled_log_fps = np.concatenate(sampled_log_segments)
+        sampled_dis1 = np.concatenate(sampled_dis_segments)
+    elif len(frontier_points) >= 3:
+        coeffs = np.polyfit(log_frontier_fps, frontier_dis1, deg=2)
+        sampled_log_fps = np.linspace(log_frontier_fps[0], log_frontier_fps[-1], 200)
+        sampled_dis1 = np.polyval(coeffs, sampled_log_fps)
+    else:
+        sampled_log_fps = np.linspace(log_frontier_fps[0], log_frontier_fps[-1], 120)
+        sampled_dis1 = np.interp(sampled_log_fps, log_frontier_fps, frontier_dis1)
+
+    frontier_fps = np.power(10.0, sampled_log_fps)
+    ax.plot(
+        frontier_fps,
+        sampled_dis1,
+        color=PALETTE["muted"],
+        linewidth=1.8,
+        linestyle=(0, (4.5, 3.2)),
+        alpha=0.95,
+        zorder=2,
+    )
+
+    label_idx = int(len(sampled_log_fps) * label_fraction)
+    ax.text(
+        frontier_fps[label_idx],
+        sampled_dis1[label_idx] + label_y_offset,
+        label_text,
+        fontsize=9.1,
+        color=PALETTE["muted"],
+        style="italic",
+        ha="left",
+        va="bottom",
+        path_effects=[pe.withStroke(linewidth=3, foreground="white", alpha=0.9)],
+    )
+
+
+def relabel_methods(
+    methods: Sequence[FigureMethod],
+    label_overrides: Mapping[str, str],
+    offset_overrides: Mapping[str, Tuple[float, float]] | None = None,
+) -> List[FigureMethod]:
+    relabeled: List[FigureMethod] = []
+    for method in methods:
+        changes: Dict[str, object] = {}
+        if method.name in label_overrides:
+            changes["short_label"] = label_overrides[method.name]
+        if offset_overrides and method.name in offset_overrides:
+            dx, dy = offset_overrides[method.name]
+            changes["label_dx"] = dx
+            changes["label_dy"] = dy
+        relabeled.append(replace(method, **changes) if changes else method)
+    return relabeled
 
 
 def create_main_pipeline_figure(output_dir: Path) -> List[Path]:
@@ -1042,13 +1155,396 @@ def create_dis1_efficiency_figure(output_dir: Path, metrics_bundle: Mapping[str,
     fig, axes = plt.subplots(
         1,
         2,
-        figsize=(13.6, 4.95),
-        constrained_layout=True,
+        figsize=(13.6, 5.05),
+        constrained_layout=False,
         gridspec_kw={"width_ratios": [1.12, 1.0]},
     )
+    fig.subplots_adjust(left=0.07, right=0.99, bottom=0.14, top=0.86, wspace=0.12)
     panel_specs = [
-        ("GTA-UAV same-area", GTA_METHODS, metrics_bundle["GTA same-area"]),
-        ("UAV-VisLoc 03/04", VISLOC_0304_METHODS, metrics_bundle["03/04"]),
+        ("GTA-UAV", GTA_METHODS, metrics_bundle["GTA same-area"]),
+        ("UAV-VisLoc", VISLOC_0304_METHODS, metrics_bundle["03/04"]),
+    ]
+
+    for ax, (title, methods, metrics_map) in zip(axes, panel_specs):
+        soften_spines(ax)
+        ax.set_xscale("log")
+        ax.set_xlabel("Frames per second (FPS, log scale)")
+        ax.set_ylabel("Dis@1 (m)")
+        ax.set_title(title, loc="left", fontweight="bold")
+        ax.grid(True, which="both", linestyle="-", linewidth=0.65, alpha=0.55)
+
+        scatter_points: Dict[str, Tuple[float, float]] = {}
+        for method in methods:
+            metrics = metrics_map[method.name]
+            x = runtime_to_fps(metrics["mean_total_s"])
+            y = metrics["dis1_m"]
+            scatter_points[method.name] = (x, y)
+            size = 255 if method.highlight else 180
+            edge_lw = 1.8 if method.highlight else 0.9
+            ax.scatter(
+                x,
+                y,
+                s=size,
+                color=method.color,
+                marker=method.marker,
+                edgecolor="white",
+                linewidth=edge_lw,
+                zorder=4 if method.highlight else 3,
+            )
+            annotate_scatter_point(
+                ax,
+                x,
+                y,
+                method.short_label,
+                method.color,
+                dx=method.label_dx,
+                dy=method.label_dy,
+            )
+
+        baseline_frontier_points = compute_pareto_frontier(
+            [scatter_points[method.name] for method in methods if not method.highlight]
+        )
+        draw_sparse_dense_frontier(ax, baseline_frontier_points)
+
+        xs = [runtime_to_fps(metrics_map[m.name]["mean_total_s"]) for m in methods]
+        ys = [metrics_map[m.name]["dis1_m"] for m in methods]
+        ax.set_xlim(min(xs) * 0.72, max(xs) * 1.45)
+        ax.set_ylim(max(ys) * 1.18, min(ys) * 0.78)
+
+        ax.annotate(
+            "Better",
+            xy=(0.96, 0.93),
+            xytext=(0.73, 0.71),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=PALETTE["ours"],
+                linewidth=2.5,
+                mutation_scale=17,
+                shrinkA=2,
+                shrinkB=1,
+            ),
+            ha="left",
+            va="center",
+            fontsize=11.4,
+            fontweight="bold",
+            color=PALETTE["ours"],
+            bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="none", alpha=0.92),
+            zorder=5,
+        )
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            linestyle="None",
+            markersize=9,
+            markerfacecolor=PALETTE["dense"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Dense DKM",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["loftr"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="LoFTR",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["sparse"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Sparse",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["rotate"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Sparse+Rotate",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=9.5,
+            markerfacecolor=PALETTE["ours"],
+            markeredgecolor="white",
+            markeredgewidth=1.1,
+            label="Ours",
+        ),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.965),
+        ncol=5,
+        frameon=False,
+        fontsize=10.2,
+        handletextpad=0.5,
+        columnspacing=1.4,
+    )
+    return save_figure(fig, output_dir, "fig02_dis1_runtime_tradeoff")
+
+
+def create_dis1_efficiency_figure_sp_lg_frontier(
+    output_dir: Path,
+    metrics_bundle: Mapping[str, Mapping[str, Dict[str, float]]],
+) -> List[Path]:
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(8.9, 10.2),
+        constrained_layout=False,
+    )
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.08, top=0.90, hspace=0.18)
+
+    label_overrides = {
+        "SuperPoint": "SP+LG",
+        "sparse": "SP+LG",
+        "SuperPoint + Rotate": "SP+LG+Rotate",
+        "sparse + rotate90": "SP+LG+Rotate",
+    }
+    offset_overrides = {
+        "SuperPoint": (6, -14),
+        "sparse": (6, -14),
+        "SuperPoint + Rotate": (7, 8),
+        "sparse + rotate90": (7, 8),
+    }
+    panel_specs = [
+        ("GTA-UAV", relabel_methods(GTA_METHODS, label_overrides, offset_overrides), metrics_bundle["GTA same-area"]),
+        ("UAV-VisLoc", relabel_methods(VISLOC_0304_METHODS, label_overrides, offset_overrides), metrics_bundle["03/04"]),
+    ]
+
+    for ax, (title, methods, metrics_map) in zip(axes, panel_specs):
+        soften_spines(ax)
+        ax.set_xscale("log")
+        ax.set_xlabel("Frames per second (FPS, log scale)")
+        ax.set_ylabel("Dis@1 (m)")
+        ax.set_title(title, loc="left", fontweight="bold")
+        ax.grid(True, which="both", linestyle="-", linewidth=0.65, alpha=0.55)
+
+        scatter_points: Dict[str, Tuple[float, float]] = {}
+        for method in methods:
+            metrics = metrics_map[method.name]
+            x = runtime_to_fps(metrics["mean_total_s"])
+            y = metrics["dis1_m"]
+            scatter_points[method.name] = (x, y)
+            size = 255 if method.highlight else 180
+            edge_lw = 1.8 if method.highlight else 0.9
+            ax.scatter(
+                x,
+                y,
+                s=size,
+                color=method.color,
+                marker=method.marker,
+                edgecolor="white",
+                linewidth=edge_lw,
+                zorder=4 if method.highlight else 3,
+            )
+            annotate_scatter_point(
+                ax,
+                x,
+                y,
+                method.short_label,
+                method.color,
+                dx=method.label_dx,
+                dy=method.label_dy,
+            )
+
+        baseline_frontier_points = compute_pareto_frontier(
+            [scatter_points[method.name] for method in methods if not method.highlight]
+        )
+        draw_sparse_dense_frontier(
+            ax,
+            baseline_frontier_points,
+            label_text="Baseline Pareto frontier",
+            fit_mode="piecewise",
+            label_fraction=0.26,
+            label_y_offset=1.8,
+        )
+
+        xs = [runtime_to_fps(metrics_map[m.name]["mean_total_s"]) for m in methods]
+        ys = [metrics_map[m.name]["dis1_m"] for m in methods]
+        ax.set_xlim(min(xs) * 0.72, max(xs) * 1.45)
+        ax.set_ylim(max(ys) * 1.18, min(ys) * 0.78)
+
+        ax.annotate(
+            "Better",
+            xy=(0.92, 0.93),
+            xytext=(0.81, 0.81),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=PALETTE["callout_green"],
+                linewidth=2.1,
+                mutation_scale=13,
+                shrinkA=1,
+                shrinkB=1,
+            ),
+            ha="left",
+            va="center",
+            fontsize=10.8,
+            fontweight="bold",
+            color=PALETTE["callout_green"],
+            bbox=dict(boxstyle="round,pad=0.16", facecolor="white", edgecolor="none", alpha=0.92),
+            zorder=5,
+        )
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            linestyle="None",
+            markersize=9,
+            markerfacecolor=PALETTE["dense"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Dense DKM",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["loftr"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="LoFTR",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["sparse"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="SP+LG",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["rotate"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="SP+LG+Rotate",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=9.5,
+            markerfacecolor=PALETTE["ours"],
+            markeredgecolor="white",
+            markeredgewidth=1.1,
+            label="Ours",
+        ),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.975),
+        ncol=5,
+        frameon=False,
+        fontsize=10.0,
+        handletextpad=0.5,
+        columnspacing=1.25,
+    )
+    return save_figure(fig, output_dir, "fig02b_dis1_runtime_tradeoff_sp_lg_frontier")
+
+
+def create_main_pipeline_posterior_only_figure(output_dir: Path) -> List[Path]:
+    sample = load_cache_record(
+        MAIN_SAMPLE["cache_path"],
+        MAIN_SAMPLE["eval_path"],
+        MAIN_SAMPLE["query_name"],
+    )
+
+    fig = plt.figure(figsize=(5.8, 5.0))
+    ax_posterior = fig.add_subplot(111, projection="polar")
+    angles_rad = np.deg2rad(sample["angles_sorted_deg"])
+    posterior = np.asarray(sample["posterior_sorted"], dtype=float)
+    posterior_width = np.deg2rad(9.0)
+    bars = ax_posterior.bar(
+        angles_rad,
+        posterior,
+        width=posterior_width,
+        color=PALETTE["rotate"],
+        alpha=0.75,
+        edgecolor="white",
+        linewidth=0.35,
+        zorder=2,
+    )
+    selected_indices = sample["selected_sorted_idx"]
+    for idx in selected_indices:
+        bars[idx].set_facecolor(PALETTE["ours"])
+        bars[idx].set_alpha(0.88)
+        bars[idx].set_edgecolor("white")
+        bars[idx].set_linewidth(0.4)
+
+    uniform = np.full_like(posterior, 1.0 / len(posterior))
+    ax_posterior.plot(angles_rad, uniform, color=PALETTE["muted"], linewidth=1.2, alpha=0.65, zorder=3)
+    ax_posterior.set_theta_zero_location("N")
+    ax_posterior.set_theta_direction(-1)
+    ax_posterior.set_title("3. VOP posterior over angles", loc="left", fontweight="bold", pad=18)
+    ax_posterior.set_rlabel_position(112)
+    ax_posterior.set_ylim(0.0, posterior.max() * 1.2)
+    ax_posterior.tick_params(labelsize=8.5)
+    ax_posterior.grid(color=PALETTE["grid"], alpha=0.85)
+    ax_posterior.text(
+        0.5,
+        -0.11,
+        "Highlighted bars = selected top-4 hypotheses",
+        transform=ax_posterior.transAxes,
+        ha="center",
+        va="top",
+        fontsize=9.1,
+        color=PALETTE["muted"],
+    )
+    return save_figure(fig, output_dir, "fig01_step3_vop_posterior_only")
+
+
+def create_dis1_efficiency_vertical_figure(
+    output_dir: Path,
+    metrics_bundle: Mapping[str, Mapping[str, Dict[str, float]]],
+) -> List[Path]:
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(8.8, 10.2),
+        constrained_layout=False,
+    )
+    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.08, top=0.90, hspace=0.18)
+
+    panel_specs = [
+        ("GTA-UAV", GTA_METHODS, metrics_bundle["GTA same-area"]),
+        ("UAV-VisLoc", VISLOC_0304_METHODS, metrics_bundle["03/04"]),
     ]
 
     for ax, (title, methods, metrics_map) in zip(axes, panel_specs):
@@ -1111,14 +1607,74 @@ def create_dis1_efficiency_figure(output_dir: Path, metrics_bundle: Mapping[str,
             color=PALETTE["muted"],
         )
 
-    fig.suptitle(
-        "Runtime-accuracy trade-off under the current paper benchmarks",
-        x=0.01,
-        ha="left",
-        fontsize=16.2,
-        fontweight="bold",
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            linestyle="None",
+            markersize=9,
+            markerfacecolor=PALETTE["dense"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Dense DKM",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["loftr"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="LoFTR",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["sparse"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Sparse",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=8.5,
+            markerfacecolor=PALETTE["rotate"],
+            markeredgecolor="white",
+            markeredgewidth=0.9,
+            label="Sparse+Rotate",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markersize=9.5,
+            markerfacecolor=PALETTE["ours"],
+            markeredgecolor="white",
+            markeredgewidth=1.1,
+            label="Ours",
+        ),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.98),
+        ncol=5,
+        frameon=False,
+        fontsize=10.2,
+        handletextpad=0.5,
+        columnspacing=1.4,
     )
-    return save_figure(fig, output_dir, "fig02b_dis1_runtime_tradeoff")
+    return save_figure(fig, output_dir, "fig02c_dis1_runtime_tradeoff_vertical")
 
 
 def create_threshold_curve_figure(output_dir: Path, metrics_bundle: Mapping[str, Mapping[str, Dict[str, float]]]) -> List[Path]:
@@ -1260,23 +1816,6 @@ def plot_angle_surface_panel(
     ax2.spines["top"].set_visible(False)
     ax2.spines["right"].set_color(PALETTE["rotate"])
     ax2.grid(False)
-
-    cache_record = sample["cache_record"]
-    eval_record = sample["eval_record"]
-    useful_count = int(useful_mask.sum())
-    components = len(sample["segments"])
-    ax.text(
-        0.01,
-        0.98,
-        f"{query_name} | useful@+5m = {useful_count} angles, {components} component(s)\n"
-        f"best error = {min(distances):.1f} m | verified final = {eval_record['final_error_m']:.1f} m",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=9.2,
-        color=PALETTE["text"],
-        bbox=dict(boxstyle="round,pad=0.28", fc="white", ec="none", alpha=0.88),
-    )
 
 
 def create_mechanism_figure(output_dir: Path) -> List[Path]:
@@ -1473,6 +2012,7 @@ def main() -> None:
     saved_paths.extend(create_main_pipeline_figure(output_dir))
     saved_paths.extend(create_tradeoff_figure(output_dir, metrics_bundle))
     saved_paths.extend(create_dis1_efficiency_figure(output_dir, metrics_bundle))
+    saved_paths.extend(create_dis1_efficiency_vertical_figure(output_dir, metrics_bundle))
     saved_paths.extend(create_threshold_curve_figure(output_dir, metrics_bundle))
     saved_paths.extend(create_mechanism_figure(output_dir))
     saved_paths.extend(create_supervision_figure(output_dir, metrics_bundle))

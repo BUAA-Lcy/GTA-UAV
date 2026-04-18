@@ -1,0 +1,69 @@
+{
+  "query_name": "01_0409.JPG",
+  "gallery_name": "01_5_005_022.png",
+  "device": "cuda",
+  "phi1_deg": 31.971045,
+  "vop_top1_angle_deg": 0.0,
+  "vop_top1_prob": 0.06293697655200958,
+  "vop_entropy": 0.980121910572052,
+  "vop_concentration": 0.2235158085823059,
+  "topk_candidates": [
+    {
+      "rank": 1,
+      "angle_deg": 0.0,
+      "posterior_prob": 0.06293697655200958,
+      "n_kept": 900,
+      "inliers": 131,
+      "inlier_ratio": 0.14555555555555555,
+      "projected_xy": [
+        138.88828836842987,
+        121.63933345251453
+      ],
+      "final_vis_path": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/pair_vop_assets_20260414/match_vis/00001_rank1_0_final_phase1.png"
+    },
+    {
+      "rank": 2,
+      "angle_deg": 10.0,
+      "posterior_prob": 0.05463385581970215,
+      "n_kept": 838,
+      "inliers": 74,
+      "inlier_ratio": 0.0883054892601432,
+      "projected_xy": [
+        125.60645975484357,
+        117.88419733199892
+      ],
+      "final_vis_path": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/pair_vop_assets_20260414/match_vis/00002_rank2_10_final_phase1.png"
+    },
+    {
+      "rank": 3,
+      "angle_deg": -10.0,
+      "posterior_prob": 0.049700167030096054,
+      "n_kept": 906,
+      "inliers": 111,
+      "inlier_ratio": 0.12251655629139073,
+      "projected_xy": [
+        132.48148369343843,
+        116.06150389003885
+      ],
+      "final_vis_path": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/pair_vop_assets_20260414/match_vis/00003_rank3_-10_final_phase1.png"
+    },
+    {
+      "rank": 4,
+      "angle_deg": 20.0,
+      "posterior_prob": 0.043434083461761475,
+      "n_kept": 830,
+      "inliers": 44,
+      "inlier_ratio": 0.05301204819277108,
+      "projected_xy": [
+        162.5393724490436,
+        133.52419252792933
+      ],
+      "final_vis_path": "/home/lcy/Workplace/GTA-UAV/Game4Loc/figures/pair_vop_assets_20260414/match_vis/00004_rank4_20_final_phase1.png"
+    }
+  ],
+  "geometry_selected_angle_deg": 0.0,
+  "geometry_selected_projected_xy": [
+    138.88828836842987,
+    121.63933345251453
+  ]
+}

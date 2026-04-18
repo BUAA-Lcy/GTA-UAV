@@ -1,0 +1,11 @@
+{
+  "query_name": "01_0409.JPG",
+  "gallery_name": "01_5_005_022.png",
+  "phi1_deg": 31.971045,
+  "best_angle_deg": 110.0,
+  "best_distance_m": 19.416776577169724,
+  "second_distance_m": 24.382604077028745,
+  "distance_gap_m": 4.965827499859021,
+  "target_entropy": 0.8290916085243225,
+  "temperature_m": 25.0
+}

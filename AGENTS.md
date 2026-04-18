@@ -197,6 +197,47 @@ Current GTA-UAV migration status:
        - `pair_weight_center_m = 30`
      - if more GTA work is requested later, expand teacher subset before more
        micro-sweeps on these two knobs
+   - Later full-teacher same-area Exp C rerun:
+     - run summary:
+       - `Game4Loc/work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/summary.md`
+     - full-teacher scope:
+       - `teacher_query_limit = 0`
+       - `effective_teacher_queries = 13851`
+     - produced checkpoint:
+       - `Game4Loc/work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/artifacts/gta_samearea_useful5_weight30_e6.pth`
+     - evaluation logs:
+       - same-run sparse baseline:
+         - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0120.log`
+       - same-run sparse + VOP:
+         - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0139.log`
+     - main result:
+       - same-run sparse baseline:
+         - `Dis@1 = 73.01m`
+         - `MA@20 = 37.87%`
+         - `fallback = 13.16%`
+         - `mean_total_time = 0.2528s/query`
+       - full-teacher sparse + VOP:
+         - `Dis@1 = 57.63m`
+         - `MA@20 = 45.92%`
+         - `fallback = 9.53%`
+         - `mean_total_time = 0.2652s/query`
+       - historical q2000 sparse + VOP reference:
+         - `Dis@1 = 62.59m`
+         - `MA@20 = 43.54%`
+         - `fallback = 12.02%`
+         - `mean_total_time = 0.3044s/query`
+     - Practical conclusion:
+       - expanding GTA teacher supervision from `2000` queries to the full
+         same-area teacher improves over both:
+         - the same-run sparse baseline
+         - the historical q2000 VOP row
+       - use:
+         - `Game4Loc/work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/artifacts/gta_samearea_useful5_weight30_e6.pth`
+         - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0139.log`
+         as the newest GTA sparse + VOP reference
+       - keep the q2000 run as:
+         - a historical fixed-subset ablation
+         - **not** the newest GTA sparse + VOP mainline row
 
 10. **Current GTA `with_match` output behavior is log-only by default.**
     - `eval_gta.py --with_match --sparse` writes the standard app log under:
@@ -260,36 +301,76 @@ Current GTA-UAV migration status:
     - Do **not** use expanded `pos_semipos` as the paper main table.
 
 15. **Current GTA-UAV paper-facing main table is complete.**
-    - Completed full same-area rows:
-      - dense DKM
-      - sparse baseline
-      - sparse + rotate90 + inlier-count selection
-      - sparse + VOP
-    - Current refreshed logs / summaries under the denser-SP sparse default:
-      - dense DKM:
-        - `Game4Loc/work_dir/gta_samearea_dense_shards_20260412/merged_summary.md`
-      - sparse:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2000.log`
-      - sparse + rotate90 + inlier-count selection:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2008.log`
-      - sparse + VOP:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2028.log`
-    - Current key result:
+   - Completed full same-area rows:
+     - dense DKM
+     - sparse baseline
+     - sparse + rotate90 + inlier-count selection
+     - sparse + VOP
+   - Current matched-table logs / summaries under the denser-SP sparse default:
+     - dense DKM:
+       - `Game4Loc/work_dir/gta_samearea_dense_shards_20260412/merged_summary.md`
+     - sparse:
+       - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2000.log`
+     - sparse + rotate90 + inlier-count selection:
+       - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2008.log`
+     - sparse + VOP:
+       - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260411_2028.log`
+   - Current matched-table key result:
       - dense DKM: `Dis@1 = 50.11m`, `MA@20 = 54.81%`, `4.0410s/query`
       - sparse: `Dis@1 = 108.47m`, `MA@20 = 14.61%`, `0.0651s/query`
       - rotate90 baseline: `Dis@1 = 77.50m`, `MA@20 = 36.45%`, `0.2831s/query`
       - sparse + VOP: `Dis@1 = 62.59m`, `MA@20 = 43.54%`, `0.3044s/query`
-    - Execution note:
+   - Later full-teacher sparse-side follow-up:
+     - run summary:
+       - `Game4Loc/work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/summary.md`
+     - refreshed sparse-side logs:
+       - sparse baseline rerun:
+         - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0120.log`
+       - sparse + VOP full-teacher rerun:
+         - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0139.log`
+     - follow-up result:
+       - sparse baseline rerun:
+         - `Dis@1 = 73.01m`
+         - `MA@20 = 37.87%`
+         - `fallback = 13.16%`
+         - `mean_total_time = 0.2528s/query`
+       - sparse + VOP full-teacher rerun:
+         - `Dis@1 = 57.63m`
+         - `MA@20 = 45.92%`
+         - `fallback = 9.53%`
+         - `mean_total_time = 0.2652s/query`
+       - delta vs same-run sparse baseline:
+         - `Dis@1`: `-15.39m`
+         - `MA@20`: `+8.05pp`
+         - `fallback`: `-3.63pp`
+       - delta vs historical q2000 sparse + VOP row:
+         - `Dis@1`: `-4.97m`
+         - `MA@20`: `+2.38pp`
+         - `fallback`: `-2.49pp`
+   - Important scope note:
+     - this later full-teacher follow-up refreshed:
+       - sparse baseline
+       - sparse + VOP
+     - it did **not** refresh:
+       - dense DKM
+       - sparse + rotate90 + inlier-count selection
+     - therefore do **not** silently mix the `20260418` sparse-side rerun with
+       the older `20260411/20260412` four-row table as if all rows were
+       refreshed under one identical run snapshot
+   - Execution note:
       - the dense row was completed with a sharded runner because the evaluator
         is very slow on this machine for full same-area GTA
       - the merged markdown summary above is the formal source of record for the
         dense row
-    - Practical reading:
-      - GTA same-area now supports the full dense / sparse / rotate / VOP
-        comparison under matched retrieval
+   - Practical reading:
+      - GTA same-area now supports:
+        - a matched four-row dense / sparse / rotate / VOP table
+        - a later full-teacher sparse-side rerun
       - `sparse + VOP` remains the strongest sparse row
-      - but dense DKM is still better than `sparse + VOP` in headline accuracy
-        and robustness
+      - the newest sparse + VOP reference is now the full-teacher rerun at:
+        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260418_0139.log`
+      - but dense DKM is still better than the sparse line in headline
+        accuracy / robustness
 
 16. **Current UAV-VisLoc `same-area-paper7` paper-facing main table is complete.**
     - Teacher cache build completed:
