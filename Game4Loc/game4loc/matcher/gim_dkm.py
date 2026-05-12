@@ -324,6 +324,7 @@ class GimDKM:
             device='cuda',
             logger=None,
             match_mode='sparse',
+            loftr_min_confidence=0.2,
             sparse_angle_score_inlier_offset=None,
             sparse_use_multi_scale=True,
             sparse_scales=None,
@@ -348,6 +349,9 @@ class GimDKM:
         self.model = None
         self.loftr_matcher = None
         self.loftr_device = None
+        self.loftr_min_confidence = max(0.0, float(loftr_min_confidence))
+        self.loftr_min_inliers = max(0, int(sparse_min_inliers))
+        self.loftr_min_inlier_ratio = max(0.0, float(sparse_min_inlier_ratio))
         if self.match_mode == "dense":
             ckpt = 'gim_dkm_100h.ckpt'
             self.model = DKMv3(weights=None, h=672, w=896)
@@ -415,6 +419,7 @@ class GimDKM:
         }
         self.last_match_info = None
         self.last_angle_results = []
+        self.last_match_debug = None
         self._log(logging.INFO, "with_match matcher mode: %s", self.match_mode)
 
     def _log(self, level, msg, *args):
@@ -570,6 +575,11 @@ class GimDKM:
         kpts0 = kpts0[mask]
         kpts1 = kpts1[mask]
         mconf = mconf[mask]
+        if self.loftr_min_confidence > 0.0 and mconf.numel() > 0:
+            conf_mask = mconf >= float(self.loftr_min_confidence)
+            kpts0 = kpts0[conf_mask]
+            kpts1 = kpts1[conf_mask]
+            mconf = mconf[conf_mask]
         t_filter = time.perf_counter() - t2
         return {
             "preproc_s": t_preproc,
@@ -581,6 +591,7 @@ class GimDKM:
         }
 
     def match(self, image0, image1, vis=False, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
+        self.last_match_debug = None
         if self.match_mode == "sparse":
             H = self.sparse_matcher.match(
                 image0,
@@ -597,8 +608,10 @@ class GimDKM:
                 self.last_match_info = None
             if self.sparse_matcher is not None:
                 self.last_angle_results = [dict(item) for item in self.sparse_matcher.get_last_angle_results()]
+                self.last_match_debug = self.sparse_matcher.get_last_match_debug()
             else:
                 self.last_angle_results = []
+                self.last_match_debug = None
             return H
         if self.match_mode == "loftr":
             t_total = time.perf_counter()
@@ -748,6 +761,7 @@ class GimDKM:
                     "out_of_bounds": False,
                     "projection_invalid": False,
                 }
+                self.last_match_debug = None
                 if search_log_str:
                     self._log(logging.DEBUG, "LoFTR搜索详情: %s => 全部失败", search_log_str)
                 return np.eye(3)
@@ -773,6 +787,29 @@ class GimDKM:
             self.stats['n_samples'] += best_stats['n_samples']
             self.stats['n_kept'] += best_stats['n_kept']
 
+            best_inlier_ratio = float(best_inliers) / float(max(int(best_stats["n_kept"]), 1))
+            identity_h_fallback = False
+            fallback_reason = None
+            if best_stats["n_kept"] < DEFAULT_MIN_NUM_MATCHES:
+                identity_h_fallback = True
+                fallback_reason = "low_match"
+            elif (
+                best_inliers < self.loftr_min_inliers
+                or best_inlier_ratio < self.loftr_min_inlier_ratio
+            ):
+                self._log(
+                    logging.DEBUG,
+                    "LoFTR H 质量不足，回退单位H: inliers=%d ratio=%.3f matches=%d conf_thresh=%.3f",
+                    best_inliers,
+                    best_inlier_ratio,
+                    best_stats["n_kept"],
+                    float(self.loftr_min_confidence),
+                )
+                identity_h_fallback = True
+                fallback_reason = "low_quality"
+            if identity_h_fallback:
+                best_H = np.eye(3, dtype=np.float32)
+
             if search_log_str:
                 self._log(logging.DEBUG, "LoFTR搜索详情: %s => 最终选择Rot=%.1f°", search_log_str, float(best_rot_angle))
 
@@ -793,14 +830,23 @@ class GimDKM:
                 "match_mode": "loftr",
                 "phase": 1,
                 "inliers": int(best_inliers),
-                "inlier_ratio": float(best_inliers) / float(max(int(best_stats["n_kept"]), 1)),
+                "inlier_ratio": best_inlier_ratio,
                 "rot_angle": float(best_rot_angle),
                 "n_kept": int(best_stats["n_kept"]),
-                "identity_h_fallback": False,
-                "fallback_to_center": False,
-                "fallback_reason": None,
+                "identity_h_fallback": bool(identity_h_fallback),
+                "fallback_to_center": bool(identity_h_fallback),
+                "fallback_reason": fallback_reason,
                 "out_of_bounds": False,
                 "projection_invalid": False,
+            }
+            self.last_match_debug = {
+                "mk0": best_data["mkpts0_f"].detach().cpu().numpy().astype(np.float32),
+                "mk1": best_data["mkpts1_f"].detach().cpu().numpy().astype(np.float32),
+                "mconf": best_data["mconf"].detach().cpu().numpy().astype(np.float32),
+                "inliers": np.asarray(best_data["inliers"]).astype(bool),
+                "rot_angle": float(best_rot_angle),
+                "n_kept": int(best_stats["n_kept"]),
+                "inliers_count": int(best_inliers),
             }
             return best_H
 
@@ -894,15 +940,26 @@ class GimDKM:
                     rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches=0 | Inliers=0]")
                     continue
 
+                kpts0_np = kpts0.cpu().detach().numpy()
+                kpts1_np = kpts1.cpu().detach().numpy()
                 try:
                     t5 = time.perf_counter()
-                    _, mask = cv2.findFundamentalMat(kpts0.cpu().detach().numpy(),
-                                                    kpts1.cpu().detach().numpy(),
-                                                    cv2.USAC_MAGSAC, ransacReprojThreshold=1.0,
-                                                    confidence=0.999999, maxIters=10000)
-                    t_f = time.perf_counter() - t5
+                    H_direct, mask = cv2.findHomography(
+                        kpts0_np,
+                        kpts1_np,
+                        cv2.USAC_MAGSAC,
+                        ransacReprojThreshold=8.0,
+                        confidence=0.999,
+                        maxIters=10000,
+                    )
+                    t_f = 0.0
+                    t_h = time.perf_counter() - t5
                 except Exception as e:
-                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): F_Fail]")
+                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): H_Fail]")
+                    continue
+
+                if H_direct is None or mask is None:
+                    rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): H_Fail]")
                     continue
 
                 mask = mask.ravel() > 0
@@ -918,9 +975,7 @@ class GimDKM:
                     'inliers': mask,
                 })
 
-                t6 = time.perf_counter()
-                geom_info = compute_geom(data)
-                t_h = time.perf_counter() - t6
+                geom_info = {"Homography": H_direct}
                 
                 rotation_search_logs.append(f"[Angle {search_angle:>5.1f}°(Rot {rot_angle:>5.1f}°): Matches={kpts0.shape[0]:>4d} | Inliers={inliers_count:>4d}]")
 
@@ -967,6 +1022,7 @@ class GimDKM:
                 "out_of_bounds": False,
                 "projection_invalid": False,
             }
+            self.last_match_debug = None
             if search_log_str:
                 self._log(logging.DEBUG, "Dense(DKM)四向搜索详情: %s => 全部失败", search_log_str)
             return np.eye(3)
@@ -1005,6 +1061,7 @@ class GimDKM:
             "inlier_ratio": float(best_inliers) / float(max(int(best_stats["n_kept"]), 1)),
             "rot_angle": float(best_rot_angle),
             "n_kept": int(best_stats["n_kept"]),
+            "homography": None if best_H is None else np.asarray(best_H, dtype=np.float32).copy(),
             "identity_h_fallback": False,
             "fallback_to_center": False,
             "fallback_reason": None,
@@ -1012,6 +1069,16 @@ class GimDKM:
             "projection_invalid": False,
         }
         self.last_angle_results = []
+        self.last_match_debug = {
+            "mk0": best_data["mkpts0_f"].detach().cpu().numpy().astype(np.float32),
+            "mk1": best_data["mkpts1_f"].detach().cpu().numpy().astype(np.float32),
+            "mconf": best_data["mconf"].detach().cpu().numpy().astype(np.float32),
+            "inliers": np.asarray(best_data["inliers"]).astype(bool),
+            "rot_angle": float(best_rot_angle),
+            "n_kept": int(best_stats["n_kept"]),
+            "inliers_count": int(best_inliers),
+            "homography": None if best_H is None else np.asarray(best_H, dtype=np.float32).copy(),
+        }
 
         return best_H
 
@@ -1020,6 +1087,9 @@ class GimDKM:
 
     def get_last_angle_results(self):
         return self.last_angle_results
+
+    def get_last_match_debug(self):
+        return self.last_match_debug
     
     def est_center(self, image0, image1, center_xy0, tl_xy0, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         t0 = time.perf_counter()

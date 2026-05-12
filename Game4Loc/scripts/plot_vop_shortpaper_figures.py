@@ -434,9 +434,15 @@ def build_paper_metrics_bundle() -> Dict[str, Dict[str, Dict[str, float]]]:
         detailed_metrics = parse_log_metrics(log_path)
         detailed_metrics.update(gta_metrics[method_name])
         gta_metrics[method_name] = detailed_metrics
-    gta_metrics["LoFTR"] = parse_summary_metrics(
+    loftr_summary_metrics = parse_summary_metrics(
         WORK_DIR / "loftr_baseline_runs" / "gta_samearea_loftr_20260411" / "summary.md"
     )
+    if "LoFTR" in gta_metrics:
+        merged_loftr_metrics = dict(loftr_summary_metrics)
+        merged_loftr_metrics.update(gta_metrics["LoFTR"])
+        gta_metrics["LoFTR"] = merged_loftr_metrics
+    else:
+        gta_metrics["LoFTR"] = loftr_summary_metrics
     supervision_metrics = load_table_metrics("8.2 VisLoc Table", SUPERVISION_PAPER_PATH)
     return {
         "03/04": visloc_metrics,
@@ -567,16 +573,27 @@ def add_panel_header(ax: plt.Axes, label: str, title: str) -> None:
     )
 
 
-def annotate_scatter_point(ax: plt.Axes, x: float, y: float, label: str, color: str, dx: float = 4, dy: float = 6) -> None:
+def annotate_scatter_point(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    label: str,
+    color: str,
+    dx: float = 4,
+    dy: float = 6,
+    *,
+    fontsize: float = 9.6,
+    stroke_width: float = 3.0,
+) -> None:
     ax.annotate(
         label,
         xy=(x, y),
         xytext=(dx, dy),
         textcoords="offset points",
-        fontsize=9.6,
+        fontsize=fontsize,
         color=color,
         fontweight="bold" if label == "Ours" else "normal",
-        path_effects=[pe.withStroke(linewidth=3, foreground="white", alpha=0.92)],
+        path_effects=[pe.withStroke(linewidth=stroke_width, foreground="white", alpha=0.92)],
     )
 
 
@@ -610,6 +627,7 @@ def draw_sparse_dense_frontier(
     fit_mode: str = "quadratic",
     label_fraction: float = 0.48,
     label_y_offset: float = 3.0,
+    label_fontsize: float = 9.1,
 ) -> None:
     if len(frontier_points) < 2:
         return
@@ -655,7 +673,7 @@ def draw_sparse_dense_frontier(
         frontier_fps[label_idx],
         sampled_dis1[label_idx] + label_y_offset,
         label_text,
-        fontsize=9.1,
+        fontsize=label_fontsize,
         color=PALETTE["muted"],
         style="italic",
         ha="left",
@@ -1307,14 +1325,40 @@ def create_dis1_efficiency_figure(output_dir: Path, metrics_bundle: Mapping[str,
 def create_dis1_efficiency_figure_sp_lg_frontier(
     output_dir: Path,
     metrics_bundle: Mapping[str, Mapping[str, Dict[str, float]]],
+    *,
+    layout: str = "vertical",
+    stem: str = "fig02b_dis1_runtime_tradeoff_sp_lg_frontier",
 ) -> List[Path]:
-    fig, axes = plt.subplots(
-        2,
-        1,
-        figsize=(8.9, 10.2),
-        constrained_layout=False,
-    )
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.08, top=0.90, hspace=0.18)
+    if layout == "horizontal":
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(16.6, 7.4),
+            constrained_layout=False,
+        )
+        fig.subplots_adjust(left=0.07, right=0.99, bottom=0.13, top=0.82, wspace=0.18)
+        title_fontsize = 27
+        axis_fontsize = 20
+        tick_fontsize = 17
+        point_label_fontsize = 17.8
+        frontier_label_fontsize = 16.2
+        better_fontsize = 18.4
+        legend_fontsize = 18.0
+    else:
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=(10.2, 11.4),
+            constrained_layout=False,
+        )
+        fig.subplots_adjust(left=0.14, right=0.985, bottom=0.09, top=0.84, hspace=0.28)
+        title_fontsize = 26
+        axis_fontsize = 21
+        tick_fontsize = 18
+        point_label_fontsize = 19.2
+        frontier_label_fontsize = 18.2
+        better_fontsize = 21.6
+        legend_fontsize = 20.0
 
     label_overrides = {
         "SuperPoint": "SP+LG",
@@ -1333,13 +1377,18 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
         ("UAV-VisLoc", relabel_methods(VISLOC_0304_METHODS, label_overrides, offset_overrides), metrics_bundle["03/04"]),
     ]
 
-    for ax, (title, methods, metrics_map) in zip(axes, panel_specs):
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes])
+
+    for panel_idx, (ax, (title, methods, metrics_map)) in enumerate(zip(axes, panel_specs)):
         soften_spines(ax)
         ax.set_xscale("log")
-        ax.set_xlabel("Frames per second (FPS, log scale)")
-        ax.set_ylabel("Dis@1 (m)")
-        ax.set_title(title, loc="left", fontweight="bold")
+        show_xlabel = layout == "horizontal" or panel_idx == len(panel_specs) - 1
+        ax.set_xlabel("Frames per second (FPS, log scale)" if show_xlabel else "", fontsize=axis_fontsize)
+        ax.set_ylabel("Dis@1 (m)", fontsize=axis_fontsize)
+        ax.set_title(title, loc="left", fontweight="bold", fontsize=title_fontsize, pad=10)
         ax.grid(True, which="both", linestyle="-", linewidth=0.65, alpha=0.55)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
 
         scatter_points: Dict[str, Tuple[float, float]] = {}
         for method in methods:
@@ -1367,6 +1416,8 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
                 method.color,
                 dx=method.label_dx,
                 dy=method.label_dy,
+                fontsize=point_label_fontsize,
+                stroke_width=4.2,
             )
 
         baseline_frontier_points = compute_pareto_frontier(
@@ -1379,6 +1430,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             fit_mode="piecewise",
             label_fraction=0.26,
             label_y_offset=1.8,
+            label_fontsize=frontier_label_fontsize,
         )
 
         xs = [runtime_to_fps(metrics_map[m.name]["mean_total_s"]) for m in methods]
@@ -1402,10 +1454,10 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             ),
             ha="left",
             va="center",
-            fontsize=10.8,
+            fontsize=better_fontsize,
             fontweight="bold",
             color=PALETTE["callout_green"],
-            bbox=dict(boxstyle="round,pad=0.16", facecolor="white", edgecolor="none", alpha=0.92),
+            bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="none", alpha=0.92),
             zorder=5,
         )
 
@@ -1415,7 +1467,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             [0],
             marker="^",
             linestyle="None",
-            markersize=9,
+            markersize=15,
             markerfacecolor=PALETTE["dense"],
             markeredgecolor="white",
             markeredgewidth=0.9,
@@ -1426,7 +1478,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             [0],
             marker="D",
             linestyle="None",
-            markersize=8.5,
+            markersize=14,
             markerfacecolor=PALETTE["loftr"],
             markeredgecolor="white",
             markeredgewidth=0.9,
@@ -1437,7 +1489,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             [0],
             marker="o",
             linestyle="None",
-            markersize=8.5,
+            markersize=14,
             markerfacecolor=PALETTE["sparse"],
             markeredgecolor="white",
             markeredgewidth=0.9,
@@ -1448,7 +1500,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             [0],
             marker="o",
             linestyle="None",
-            markersize=8.5,
+            markersize=14,
             markerfacecolor=PALETTE["rotate"],
             markeredgecolor="white",
             markeredgewidth=0.9,
@@ -1459,7 +1511,7 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
             [0],
             marker="o",
             linestyle="None",
-            markersize=9.5,
+            markersize=15,
             markerfacecolor=PALETTE["ours"],
             markeredgecolor="white",
             markeredgewidth=1.1,
@@ -1472,11 +1524,11 @@ def create_dis1_efficiency_figure_sp_lg_frontier(
         bbox_to_anchor=(0.5, 0.975),
         ncol=5,
         frameon=False,
-        fontsize=10.0,
-        handletextpad=0.5,
-        columnspacing=1.25,
+        fontsize=legend_fontsize,
+        handletextpad=0.6,
+        columnspacing=1.45,
     )
-    return save_figure(fig, output_dir, "fig02b_dis1_runtime_tradeoff_sp_lg_frontier")
+    return save_figure(fig, output_dir, stem)
 
 
 def create_main_pipeline_posterior_only_figure(output_dir: Path) -> List[Path]:

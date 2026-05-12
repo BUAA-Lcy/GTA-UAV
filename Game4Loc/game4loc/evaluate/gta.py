@@ -336,6 +336,7 @@ def evaluate(
         sparse_ransac_reproj_threshold=20.0,
         sparse_min_inliers=15,
         sparse_min_inlier_ratio=0.001,
+        loftr_min_confidence=0.2,
         logger=None,
         rotate=True,
         epoch=None):
@@ -364,6 +365,13 @@ def evaluate(
             int(sparse_secondary_accept_min_inliers),
             float(sparse_secondary_accept_min_inlier_ratio),
             float(sparse_ransac_reproj_threshold),
+            int(sparse_min_inliers),
+            float(sparse_min_inlier_ratio),
+        )
+    if with_match and match_mode == "loftr":
+        logger.debug(
+            "GTA LoFTR 参数: min_confidence=%.3f min_inliers=%d min_inlier_ratio=%.6f",
+            float(loftr_min_confidence),
             int(sparse_min_inliers),
             float(sparse_min_inlier_ratio),
         )
@@ -397,6 +405,7 @@ def evaluate(
             device=config.device,
             logger=logger,
             match_mode=match_mode,
+            loftr_min_confidence=loftr_min_confidence,
             sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=sparse_use_multi_scale,
             sparse_scales=sparse_scales,

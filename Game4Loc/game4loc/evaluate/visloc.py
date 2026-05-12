@@ -401,6 +401,7 @@ def evaluate(
         sparse_ransac_reproj_threshold=20.0,
         sparse_min_inliers=15,
         sparse_min_inlier_ratio=0.001,
+        loftr_min_confidence=0.2,
         sparse_save_final_vis=False,
         angle_experiment=False,
         orientation_checkpoint="",
@@ -422,6 +423,13 @@ def evaluate(
             "评估参数：ranks=%s, sdmk=%s, disk=%s, step_size=%s, with_match=%s, match_mode=%s, rotate=%s, sparse_angle_score_inlier_offset=%s, sparse_use_multi_scale=%s, sparse_scales=%s, sparse_multi_scale_mode=%s, sparse_allow_upsample=%s, sparse_cross_scale_dedup_radius=%.2f, sparse_lightglue_profile=%s, sparse_sp_det=%.6f, sparse_sp_max_kpts=%d, sparse_sp_nms=%d, sparse_ransac_method=%s, sparse_secondary_on_fallback=%s, sparse_secondary_ransac_method=%s, sparse_secondary_mode=%s, sparse_secondary_accept_min_inliers=%d, sparse_secondary_accept_min_inlier_ratio=%.6f, sparse_ransac_thresh=%.3f, sparse_min_inliers=%d, sparse_min_inlier_ratio=%.6f, sparse_save_final_vis=%s, angle_experiment=%s",
             ranks_list, sdmk_list, disk_list, step_size, with_match, match_mode, rotate, sparse_angle_score_inlier_offset, sparse_use_multi_scale, sparse_scales, sparse_multi_scale_mode, sparse_allow_upsample, float(sparse_cross_scale_dedup_radius), sparse_lightglue_profile, float(sparse_sp_detection_threshold), int(sparse_sp_max_num_keypoints), int(sparse_sp_nms_radius), sparse_ransac_method, bool(sparse_secondary_on_fallback), sparse_secondary_ransac_method, sparse_secondary_mode, int(sparse_secondary_accept_min_inliers), float(sparse_secondary_accept_min_inlier_ratio), float(sparse_ransac_reproj_threshold), int(sparse_min_inliers), float(sparse_min_inlier_ratio), sparse_save_final_vis, angle_experiment,
         )
+        if with_match and match_mode == "loftr":
+            logger.debug(
+                "LoFTR 参数：min_confidence=%.3f min_inliers=%d min_inlier_ratio=%.6f",
+                float(loftr_min_confidence),
+                int(sparse_min_inliers),
+                float(sparse_min_inlier_ratio),
+            )
     else:
         print("Extract Features and Compute Scores:")
     model.eval()
@@ -454,6 +462,7 @@ def evaluate(
             device=config.device,
             match_mode=match_mode,
             logger=logger,
+            loftr_min_confidence=loftr_min_confidence,
             sparse_angle_score_inlier_offset=sparse_angle_score_inlier_offset,
             sparse_use_multi_scale=sparse_use_multi_scale,
             sparse_scales=sparse_scales,

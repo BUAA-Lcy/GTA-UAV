@@ -192,6 +192,7 @@ class SparseSpLgMatcher:
         self.last_match_info = None
         self.last_angle_results = []
         self.last_final_vis_path = None
+        self.last_match_debug = None
 
     def _normalize_scales(self, scales):
         normalized = []
@@ -809,6 +810,7 @@ class SparseSpLgMatcher:
     def match(self, image0, image1, yaw0=None, yaw1=None, rotate=True, case_name=None, save_final_vis=None):
         t_total = time.perf_counter()
         self.last_final_vis_path = None
+        self.last_match_debug = None
         rotate_step_p1 = self._normalize_rotate_step(rotate)
         if rotate_step_p1 <= 1e-6:
             yaw0 = None
@@ -879,6 +881,7 @@ class SparseSpLgMatcher:
                 "final_vis_path": None,
                 "scale_stats": [],
             }
+            self.last_match_debug = None
             return np.eye(3)
             
         H, inliers, inlier_ratio, rot_angle = b_H, b_inliers, b_ratio, b_angle
@@ -972,6 +975,7 @@ class SparseSpLgMatcher:
             "inliers": int(inliers),
             "inlier_ratio": float(inlier_ratio),
             "rot_angle": float(rot_angle),
+            "homography": None if H is None else np.asarray(H, dtype=np.float32).copy(),
             "n_kept": int(b_stats["n_kept"]),
             "identity_h_fallback": bool(identity_h_fallback),
             "fallback_to_center": bool(identity_h_fallback),
@@ -989,6 +993,18 @@ class SparseSpLgMatcher:
                 }
                 for item in scale_stats
             ],
+        }
+        self.last_match_debug = {
+            "mk0": None if b_stats.get("mk0") is None else np.asarray(b_stats["mk0"], dtype=np.float32).copy(),
+            "mk1": None if b_stats.get("mk1") is None else np.asarray(b_stats["mk1"], dtype=np.float32).copy(),
+            "h_mask": None if b_stats.get("h_mask") is None else np.asarray(b_stats["h_mask"]).copy(),
+            "image1_vis_rot": b_stats.get("image1_vis_rot"),
+            "rot_angle": float(rot_angle),
+            "homography": None if H is None else np.asarray(H, dtype=np.float32).copy(),
+            "n_kept": int(b_stats["n_kept"]),
+            "inliers": int(inliers),
+            "phase": int(selected_phase),
+            "identity_h_fallback": bool(identity_h_fallback),
         }
         return H
 
@@ -1057,3 +1073,6 @@ class SparseSpLgMatcher:
 
     def get_last_angle_results(self):
         return self.last_angle_results
+
+    def get_last_match_debug(self):
+        return self.last_match_debug

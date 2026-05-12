@@ -305,17 +305,15 @@ Common retrieval metrics on this compact protocol:
 
 This compact protocol should still be the main VisLoc table for writing.
 
-## 7.3 Demote Paper7
+## 7.3 Abandon Paper7 In The Current Draft
 
-Paper7 should not be the center of the current draft.
+`same-area-paper7` should not be part of the current mainline anymore.
 
-The reason is not that it is useless. The reason is that the absolute numbers
-are still too weak to carry the paper story cleanly. It is better used as:
+For the current draft, the practical decision is:
 
-- a transfer check;
-- a negative or mixed result;
-- a limitation paragraph;
-- or a compact supplementary table.
+- do **not** build the VisLoc story around Paper7;
+- do **not** spend new experiment budget refreshing it;
+- keep it only as a historical archive if a limitation paragraph is needed later.
 
 
 # 8. Writing-Ready Experimental Summary
@@ -397,9 +395,10 @@ How to read this table:
   - **dense is still stronger in absolute accuracy**
   - **ours is dramatically faster than dense**
 
-## 8.3 Paper7: Secondary Negative / Mixed Evidence
+## 8.3 Historical Paper7 Note
 
-Paper7 should be summarized briefly, not foregrounded.
+Paper7 is no longer part of the current writing path and should not be
+foregrounded.
 
 | Variant | Dis@1 | MA@20 | fallback | worse-than-coarse | mean total time |
 |---|---:|---:|---:|---:|---:|
@@ -408,7 +407,7 @@ Paper7 should be summarized briefly, not foregrounded.
 | sparse + rotate90 + inlier-count | 258.18 | 18.28 | 16.97% | 62.40% | 0.3111s |
 | sparse + VOP | 257.94 | 25.59 | 15.93% | 60.57% | 0.3291s |
 
-The right interpretation is:
+If this archived result is mentioned at all, the right interpretation is:
 
 - `VOP + sparse` is still the strongest sparse row;
 - but all sparse rows are weak in absolute terms;
@@ -420,6 +419,27 @@ If Paper7 appears in the main text at all, it should be framed as:
 
 > a more difficult transfer setting where the sparse-side ranking is preserved,
 > but the absolute performance gap to dense remains open.
+
+## 8.4 Supplementary External Matcher Check: LoFTR
+
+Current LoFTR references under the updated quality-gated path are:
+
+| Dataset | Variant | Dis@1 | MA@20 | fallback | worse-than-coarse | mean total time |
+|---|---|---:|---:|---:|---:|---:|
+| UAV-VisLoc compact `03/04` | LoFTR (quality-gated) | 63.92 | 18.97 | 65.52% | 72.41% | 0.8167s |
+| GTA same-area | LoFTR (historical ungated) | 130.66 | 16.93 | 4.01% | 54.98% | 0.6972s |
+| GTA same-area | LoFTR (quality-gated) | 97.01 | 18.70 | 75.81% | 4.24% | 1.4742s |
+
+The correct reading is:
+
+- the old LoFTR path partly underperformed because it accepted too many bad
+  homographies;
+- adding confidence filtering and sparse-aligned geometry gates makes the GTA
+  LoFTR result fairer and less pathological;
+- but the new LoFTR path still falls back too often and remains clearly weaker
+  than dense DKM and `VOP + sparse` on both current working protocols;
+- therefore LoFTR should be treated as a supplementary external matcher check,
+  not a main-table method line.
 
 
 # 9. What To Write In The Paper
@@ -502,11 +522,12 @@ One method figure should show:
 
 Use a compact GTA table with:
 
-1. LoFTR
-2. dense DKM
-3. SP+LG
-4. SP+LG+rotate90
-5. ours
+1. dense DKM
+2. SP+LG
+3. SP+LG+rotate90
+4. ours
+
+LoFTR can be shown only as a supplementary appendix-style comparison row.
 
 ## 11.3 UAV-VisLoc Table
 
@@ -516,8 +537,9 @@ Suggested rows:
 
 1. dense DKM
 2. sparse + rotate90
-3. LoFTR
-4. ours
+3. ours
+
+LoFTR should stay supplementary here as well, not a core VisLoc main-table row.
 
 
 # 12. Claim Discipline

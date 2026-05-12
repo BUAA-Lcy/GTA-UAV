@@ -89,6 +89,7 @@ class Configuration:
     sparse_ransac_reproj_threshold: float = 20.0
     sparse_min_inliers: int = 15
     sparse_min_inlier_ratio: float = 0.001
+    loftr_min_confidence: float = 0.2
 
     # set num_workers to 0 if on Windows
     num_workers: int = 0 if os.name == 'nt' else 4 
@@ -176,6 +177,13 @@ def eval_script(config):
                 logger.info("匹配可视化最大保存数: %d", int(config.match_vis_max_save))
         elif config.orientation_mode != "off":
             logger.warning("当前仅 sparse 匹配路径支持 VOP；match_mode=%s 时会自动忽略 orientation_mode=%s", config.match_mode, config.orientation_mode)
+        elif config.match_mode == 'loftr':
+            logger.info(
+                "LoFTR 质量门槛: min_confidence=%.3f min_inliers=%d min_inlier_ratio=%.6f",
+                float(config.loftr_min_confidence),
+                int(config.sparse_min_inliers),
+                float(config.sparse_min_inlier_ratio),
+            )
     log_config(logger, config)
 
     #-----------------------------------------------------------------------------#
@@ -376,6 +384,7 @@ def eval_script(config):
             sparse_ransac_reproj_threshold=config.sparse_ransac_reproj_threshold,
             sparse_min_inliers=config.sparse_min_inliers,
             sparse_min_inlier_ratio=config.sparse_min_inlier_ratio,
+            loftr_min_confidence=config.loftr_min_confidence,
             logger=logger,
             rotate=config.rotate,
         )
@@ -430,6 +439,7 @@ def parse_args():
     parser.add_argument('--sparse_ransac_reproj_threshold', type=float, default=20.0, help='Sparse homography RANSAC reprojection threshold in pixels.')
     parser.add_argument('--sparse_min_inliers', type=int, default=15, help='Minimum inlier count required before accepting sparse homography.')
     parser.add_argument('--sparse_min_inlier_ratio', type=float, default=0.001, help='Minimum inlier ratio required before accepting sparse homography.')
+    parser.add_argument('--loftr_min_confidence', type=float, default=0.2, help='Minimum LoFTR match confidence required before homography estimation.')
     parser.add_argument('--query_limit', type=int, default=0, help='Limit the number of queries for quick evaluation (0 for all)')
     parser.add_argument('--query_offset', type=int, default=0, help='Skip the first N queries before applying query_limit. Default is 0.')
 
@@ -498,6 +508,7 @@ if __name__ == '__main__':
     config.sparse_ransac_reproj_threshold = float(args.sparse_ransac_reproj_threshold)
     config.sparse_min_inliers = int(args.sparse_min_inliers)
     config.sparse_min_inlier_ratio = float(args.sparse_min_inlier_ratio)
+    config.loftr_min_confidence = float(args.loftr_min_confidence)
     config.query_limit = args.query_limit
     config.query_offset = args.query_offset
     config.use_wandb = False # 强制关闭wandb

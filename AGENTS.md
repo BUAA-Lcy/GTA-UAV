@@ -69,9 +69,12 @@ Current research state:
 3. **Current default proposer configuration:**
    - `prior_topk=4`
 
-4. **But important warning:**
-   - The old `03/04` same-area small protocol is now **development-only**.
-   - Do **not** use it as the main benchmark for formal paper claims.
+4. **Current VisLoc protocol decision:**
+   - The user has explicitly asked to abandon `same-area-paper7` for current work.
+   - Use the compact UAV-VisLoc `03/04 same-area` protocol as the current VisLoc
+     evaluation / writing track.
+   - Keep `same-area-paper7` only as a historical record unless explicitly
+     requested again.
 
 5. **Current supervision diagnosis status on the 03/04 dev protocol:**
    - `current teacher baseline`
@@ -79,9 +82,10 @@ Current research state:
    - `pair-confidence-weighted useful-angle set supervision`
    have all been compared.
 
-6. **Current best formal next step:**
-   - Move the **useful-angle set supervision** idea to a larger / stricter
-     protocol for formal validation.
+6. **Current writeup target:**
+   - Keep **GTA-UAV same-area** as the larger-scale mainline.
+   - Use **UAV-VisLoc `03/04` compact same-area** as the current real-world
+     validation track.
    - Keep `hard clean-pair filter` only as a diagnostic baseline.
 
 Current GTA-UAV migration status:
@@ -288,17 +292,23 @@ Current GTA-UAV migration status:
       - `sparse + rotate90`
     - Do **not** mix in extra heuristics for this baseline.
 
-14. **Current UAV-VisLoc paper-facing protocol is `same-area-paper7`, not expanded strict-pos.**
+14. **Current UAV-VisLoc working protocol is the compact `03/04 same-area` split.**
     - Use:
-      - `data/UAV_VisLoc_dataset/same-area-paper7-drone2sate-train.json`
-      - `data/UAV_VisLoc_dataset/same-area-paper7-drone2sate-test.json`
-      - `data/UAV_VisLoc_dataset/same-area-paper7-split-summary.json`
+      - `data/UAV_VisLoc_dataset/same-area-drone2sate-train.json`
+      - `data/UAV_VisLoc_dataset/same-area-drone2sate-test.json`
+    - Evaluate with:
+      - `--test_mode pos`
     - Current matched retrieval checkpoint for this protocol is:
-      - `Game4Loc/work_dir/visloc/vit_base_patch16_rope_reg1_gap_256.sbb_in1k/0409152642/weights_e10_0.6527.pth`
-    - Current `same-area-paper7` split summary:
-      - train pos queries: `1542`
-      - test pos queries: `383`
-    - Do **not** use expanded `pos_semipos` as the paper main table.
+      - `Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth`
+    - Effective fine-localization query count:
+      - `116`
+    - Current evaluator gallery size:
+      - `17528`
+    - User instruction for current work:
+      - abandon `same-area-paper7`
+      - stop using it as the current VisLoc paper-facing benchmark
+    - Do **not** use expanded `pos_semipos` unless the user explicitly wants a
+      looser protocol.
 
 15. **Current GTA-UAV paper-facing main table is complete.**
    - Completed full same-area rows:
@@ -372,32 +382,24 @@ Current GTA-UAV migration status:
       - but dense DKM is still better than the sparse line in headline
         accuracy / robustness
 
-16. **Current UAV-VisLoc `same-area-paper7` paper-facing main table is complete.**
-    - Teacher cache build completed:
-      - `Game4Loc/work_dir/paper7_main_table_runs/visloc_paper7_20260411/artifacts/teacher_samearea_paper7.pt`
-    - Paper7 VOP training completed:
-      - `Game4Loc/work_dir/paper7_main_table_runs/visloc_paper7_20260411/artifacts/vop_samearea_paper7_useful5_weight30_e6.pth`
-    - Completed full main-table rows:
-      - dense DKM
-      - sparse baseline
-      - sparse + rotate90 + inlier-count selection
-      - sparse + VOP
-    - Current refreshed sparse-side logs under the denser-SP sparse default:
-      - sparse:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260411_2053.log`
-      - sparse + rotate90 + inlier-count selection:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260411_2058.log`
-      - sparse + VOP:
-        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260411_2103.log`
-    - Current key result:
-      - dense: `Dis@1 = 241.40m`, `MA@20 = 35.51%`, `4.1128s/query`
-      - sparse: `Dis@1 = 274.68m`, `MA@20 = 10.44%`, `0.0747s/query`
-      - rotate90 baseline: `Dis@1 = 258.18m`, `MA@20 = 18.28%`, `0.3111s/query`
-      - sparse + VOP: `Dis@1 = 257.94m`, `MA@20 = 25.59%`, `0.3291s/query`
+16. **Current UAV-VisLoc `03/04` compact protocol is the active VisLoc writeup reference.**
+    - Current compact-protocol reference rows are:
+      - dense DKM, no rotate: `Dis@1 = 32.45m`, `MA@20 = 49.14%`, `fallback = 1.72%`, `11.5241s/query`
+      - sparse + rotate90 + inlier-count selection: `Dis@1 = 59.47m`, `MA@20 = 24.14%`, `fallback = 17.24%`, `0.2942s/query`
+      - useful5-weight30, top-4 (ours): `Dis@1 = 38.86m`, `MA@20 = 37.93%`, `fallback = 11.21%`, `0.3408s/query`
+    - Useful current reference logs:
+      - dense:
+        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260411_0400.log`
+      - sparse baseline under the denser-SP default:
+        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260411_2358.log`
+      - best gated geometry-only follow-up:
+        - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260412_0805.log`
     - Practical reading:
-      - VOP still clearly improves over the explicit sparse baselines
-      - but on current Paper7, VOP is still behind dense DKM in headline
-        accuracy / robustness
+      - on `03/04`, dense is still the strongest absolute row
+      - among sparse lines, `useful5-weight30, top-4` remains the most
+        paper-worthy row
+      - keep `03/04` as the current VisLoc validation line
+      - do **not** refresh `same-area-paper7` unless explicitly requested
 
 17. **Official evaluators now support a supplementary LoFTR baseline.**
     - `Game4Loc/eval_visloc.py` now accepts:
@@ -409,40 +411,56 @@ Current GTA-UAV migration status:
     - Current implementation uses:
       - Kornia pretrained outdoor LoFTR
       - homography-only RANSAC inside the LoFTR matcher path
+      - `mconf` filtering through `--loftr_min_confidence`
+      - sparse-aligned `min_inliers / min_inlier_ratio` acceptance gates before
+        keeping a non-identity homography
     - Treat this as:
       - a supplementary external baseline
       - **not** the new default matcher path
 
-18. **A UAV-VisLoc Paper7 LoFTR baseline has completed.**
-    - Run summary:
-      - `Game4Loc/work_dir/loftr_baseline_runs/visloc_paper7_loftr_20260411/summary.md`
+18. **A UAV-VisLoc `03/04` compact-protocol LoFTR rerun has completed under the new quality gates.**
+    - Full log:
+      - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260419_0735.log`
     - Main result:
-      - `Dis@1 = 277.03m`
-      - `MA@20 = 19.06%`
-      - `fallback = 7.31%`
-      - `mean_total_time = 0.6796s/query`
+      - `Dis@1 = 63.92m`
+      - `MA@20 = 18.97%`
+      - `fallback = 65.52%`
+      - `worse-than-coarse = 72.41%`
+      - `mean_total_time = 0.8167s/query`
     - Practical interpretation:
-      - LoFTR is more stable than raw sparse on Paper7
-      - but it is still worse than:
+      - once low-quality homographies are rejected, LoFTR on compact `03/04`
+        falls back on most queries
+      - it remains behind:
         - dense DKM
-        - sparse + VOP
-      - therefore it does **not** replace the current paper-facing sparse mainline
+        - the current `useful5-weight30` sparse line
+        - even the current raw sparse baseline on this compact protocol
+      - therefore it should remain supplementary only
 
-19. **A GTA-UAV same-area LoFTR baseline has completed.**
-    - Run summary:
+19. **A GTA-UAV same-area LoFTR rerun has completed under the new quality gates.**
+    - Historical ungated summary:
       - `Game4Loc/work_dir/loftr_baseline_runs/gta_samearea_loftr_20260411/summary.md`
-    - Main result:
-      - `Dis@1 = 130.66m`
-      - `MA@20 = 16.93%`
-      - `fallback = 4.01%`
-      - `worse-than-coarse = 54.98%`
-      - `mean_total_time = 0.6972s/query`
+    - Current quality-gated full log:
+      - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260419_0740.log`
+    - Current main result:
+      - `Dis@1 = 97.01m`
+      - `MA@20 = 18.70%`
+      - `fallback = 75.81%`
+      - `worse-than-coarse = 4.24%`
+      - `mean_total_time = 1.4742s/query`
+    - Change vs the historical ungated LoFTR baseline:
+      - `Dis@1`: `130.66m -> 97.01m`
+      - `MA@20`: `16.93% -> 18.70%`
+      - `worse-than-coarse`: `54.98% -> 4.24%`
+      - `fallback`: `4.01% -> 75.81%`
     - Practical interpretation:
-      - LoFTR reduces fallback strongly on GTA same-area
-      - but the final localization quality is much worse than:
+      - the old GTA LoFTR path was indeed accepting many bad homographies
+      - the new gates fix that failure mode, but they do so mostly by falling
+        back to coarse localization
+      - even after this fix, LoFTR still trails:
+        - sparse baseline
         - sparse + rotate90 + inlier-count
         - sparse + VOP
-      - therefore it should remain:
+      - therefore it remains:
         - a supplementary comparison row
         - **not** a default path
 
@@ -850,16 +868,20 @@ Current support status:
 
 # 7. Dataset Protocols And What They Mean
 
-## 7.1 03/04 same-area small protocol
+## 7.1 03/04 same-area compact protocol
 
-This is the old protocol built from UAV-VisLoc areas `03` and `04`.
+This is the compact UAV-VisLoc protocol built from areas `03` and `04`.
 
-Use it only as:
+Use it as:
 
-- a **development protocol**
+- the current **VisLoc working / writing protocol**
 - a **supervision diagnosis protocol**
+- a **supplementary external-matcher benchmark**
 
-Do **not** use it as the main benchmark in the paper.
+Important caveat:
+
+- it is still a compact split and should be described honestly as such
+- the user has explicitly chosen it over `same-area-paper7` for current work
 
 Important facts:
 
@@ -909,30 +931,30 @@ Interpretation:
 Do not use `pos_semipos` as the formal benchmark unless the user explicitly
 wants a looser protocol.
 
-## 7.3 Formal benchmark target
+## 7.3 Current benchmark target
 
-The next agent should treat the real paper-facing benchmark as:
+The next agent should treat the current working benchmark set as:
 
 - UAV-VisLoc:
-  - `same-area-paper7`
+  - compact `03/04 same-area`
 - GTA-UAV:
   - same-area main-table comparison first
-- not the old 03/04 development split
 - not expanded `pos_semipos`
+- not `same-area-paper7` unless the user explicitly reactivates it
 
-For UAV-VisLoc `same-area-paper7`, use:
+For UAV-VisLoc compact `03/04`, use:
 
-- `data/UAV_VisLoc_dataset/same-area-paper7-drone2sate-train.json`
-- `data/UAV_VisLoc_dataset/same-area-paper7-drone2sate-test.json`
+- `data/UAV_VisLoc_dataset/same-area-drone2sate-train.json`
+- `data/UAV_VisLoc_dataset/same-area-drone2sate-test.json`
 - retrieval checkpoint:
-  - `Game4Loc/work_dir/visloc/vit_base_patch16_rope_reg1_gap_256.sbb_in1k/0409152642/weights_e10_0.6527.pth`
+  - `Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth`
 
 If another larger protocol is built later, make sure:
 
 - positive label semantics stay strict
 - evaluation remains directly comparable
-- 03/04 results are labeled clearly as development-only
-- `same-area-paper7` remains labeled as the current paper-facing VisLoc protocol
+- compact `03/04` results are labeled clearly as a compact protocol
+- new protocol claims are not silently mixed with the current compact VisLoc line
 
 ## 7.4 GTA-UAV protocol status
 
@@ -1270,7 +1292,11 @@ Practical conclusion:
   - dense DKM remains stronger in absolute quality
   - sparse + VOP remains much faster and is still the strongest sparse line
 
-## 9.7 UAV-VisLoc `same-area-paper7` paper-facing main table
+## 9.7 Historical UAV-VisLoc `same-area-paper7` archive
+
+User's current instruction is to abandon `same-area-paper7` for current work.
+Keep this section only as a historical archive. Do **not** refresh it unless the
+user explicitly asks for Paper7 again.
 
 Current paper-facing run directory:
 
@@ -1346,24 +1372,31 @@ LoFTR is now available as a supplementary official-evaluator baseline through:
 - `eval_visloc.py --loftr`
 - `eval_gta.py --loftr`
 
-Current completed summary files:
+Current useful LoFTR references:
 
-- UAV-VisLoc Paper7:
-  - `Game4Loc/work_dir/loftr_baseline_runs/visloc_paper7_loftr_20260411/summary.md`
-- GTA-UAV same-area:
+- UAV-VisLoc compact `03/04` quality-gated rerun:
+  - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260419_0735.log`
+- GTA-UAV same-area historical ungated summary:
   - `Game4Loc/work_dir/loftr_baseline_runs/gta_samearea_loftr_20260411/summary.md`
+- GTA-UAV same-area quality-gated rerun:
+  - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260419_0740.log`
 
 Official evaluator summary:
 
 | Dataset | Variant | Dis@1 | MA@20 | fallback | worse-than-coarse | mean total time |
 |---|---|---:|---:|---:|---:|---:|
-| UAV-VisLoc Paper7 | LoFTR | 277.03 | 19.06 | 7.31% | 65.54% | 0.6796s |
-| GTA same-area | LoFTR | 130.66 | 16.93 | 4.01% | 54.98% | 0.6972s |
+| UAV-VisLoc compact `03/04` | LoFTR (quality-gated) | 63.92 | 18.97 | 65.52% | 72.41% | 0.8167s |
+| GTA same-area | LoFTR (historical ungated) | 130.66 | 16.93 | 4.01% | 54.98% | 0.6972s |
+| GTA same-area | LoFTR (quality-gated) | 97.01 | 18.70 | 75.81% | 4.24% | 1.4742s |
 
 Interpretation:
 
-- LoFTR often reduces fallback compared with raw sparse baselines.
-- But on the current formal protocols it does **not** beat:
+- The old LoFTR path was partly suffering from implementation looseness:
+  it accepted many bad homographies and therefore produced misleadingly low
+  fallback together with very high `worse-than-coarse`.
+- The new quality-gated reruns confirm that point, especially on GTA:
+  `worse-than-coarse` drops sharply, but fallback becomes very high.
+- Even after this fix, LoFTR still does **not** beat:
   - dense DKM
   - sparse + rotate90 + inlier-count
   - sparse + VOP
@@ -1732,11 +1765,11 @@ For cached mechanism experiments, report:
 
 ## 11.1 Retrieval / backbone checkpoint
 
-Use this for current comparable experiments:
+Use this for current comparable UAV-VisLoc experiments:
 
 - `Game4Loc/pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth`
 
-For current UAV-VisLoc paper-facing `same-area-paper7` experiments, use:
+Historical / deprioritized Paper7 checkpoint:
 
 - `Game4Loc/work_dir/visloc/vit_base_patch16_rope_reg1_gap_256.sbb_in1k/0409152642/weights_e10_0.6527.pth`
 
@@ -1760,15 +1793,15 @@ Do not use for new matched runs unless explicitly necessary:
   - `Game4Loc/work_dir/vop/vop_0409_clean30_rankce_e6.pth`
 - Weighted useful-angle baseline:
   - `Game4Loc/work_dir/vop/vop_0409_useful5_weight30_e6.pth`
-- Current UAV-VisLoc `same-area-paper7` paper-facing checkpoint:
+- Historical UAV-VisLoc `same-area-paper7` checkpoint:
   - `Game4Loc/work_dir/paper7_main_table_runs/visloc_paper7_20260411/artifacts/vop_samearea_paper7_useful5_weight30_e6.pth`
 - Current GTA-UAV same-area paper-facing checkpoint:
-  - `Game4Loc/work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/artifacts/exp_c_useful5_weight30_e6.pth`
+  - `Game4Loc/work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/artifacts/gta_samearea_useful5_weight30_e6.pth`
 
 ## 11.3 Teacher cache
 
 - `Game4Loc/work_dir/vop/teacher_0407_full.pt`
-- Current UAV-VisLoc `same-area-paper7` teacher cache:
+- Historical UAV-VisLoc `same-area-paper7` teacher cache:
   - `Game4Loc/work_dir/paper7_main_table_runs/visloc_paper7_20260411/artifacts/teacher_samearea_paper7.pt`
 
 ## 11.4 Confidence verifier artifact
@@ -1804,10 +1837,12 @@ Do **not** use them for claims.
 
 Current useful supplementary baseline summaries:
 
-- UAV-VisLoc Paper7 LoFTR:
-  - `Game4Loc/work_dir/loftr_baseline_runs/visloc_paper7_loftr_20260411/summary.md`
-- GTA-UAV same-area LoFTR:
+- UAV-VisLoc compact `03/04` LoFTR quality-gated rerun:
+  - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_VisLoc_same_match_on_VisLoc_20260419_0735.log`
+- GTA-UAV same-area LoFTR historical ungated summary:
   - `Game4Loc/work_dir/loftr_baseline_runs/gta_samearea_loftr_20260411/summary.md`
+- GTA-UAV same-area LoFTR quality-gated rerun:
+  - `Game4Loc/Log/vit_base_patch16_rope_reg1_gap_256_sbb_in1k_eval_GTA-UAV_same_match_on_20260419_0740.log`
 - VisLoc sparse matcher controls:
   - `Game4Loc/work_dir/visloc_sparse_yaw_matcher_control_runs/visloc_sparse_yaw_matcher_control_20260410_v2/summary.md`
 - VisLoc scale-contribution ablation:
@@ -2056,7 +2091,7 @@ WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_gta.py \
   --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
   --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
   --with_match --sparse --num_workers 0 --batch_size 32 --gpu_ids 0 \
-  --orientation_checkpoint ./work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/artifacts/exp_c_useful5_weight30_e6.pth \
+  --orientation_checkpoint ./work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/artifacts/gta_samearea_useful5_weight30_e6.pth \
   --orientation_mode prior_topk --orientation_topk 4
 ```
 
@@ -2081,6 +2116,9 @@ To move the same pipeline to cross-area, switch both:
 These commands are the current paper-facing comparison commands.
 
 Keep retrieval fixed. Only change the fine-localization module / matcher path.
+
+For the current UAV-VisLoc compact `03/04` commands, reuse the official
+evaluator command blocks in Section `13.1`.
 
 ### GTA-UAV same-area main table
 
@@ -2143,11 +2181,15 @@ WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_gta.py \
   --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
   --checkpoint_start ./pretrained/gta/vit_base_eva_gta_same_area.pth \
   --with_match --sparse --num_workers 0 --batch_size 32 --gpu_ids 0 \
-  --orientation_checkpoint ./work_dir/gta_vop_samearea_supervision_compare_runs/gta_samearea_supervision_compare_q2000_20260410/artifacts/exp_c_useful5_weight30_e6.pth \
+  --orientation_checkpoint ./work_dir/gta_vop_same_area_runs/gta_samearea_fullteacher_exp_c_20260417_125519/artifacts/gta_samearea_useful5_weight30_e6.pth \
   --orientation_mode prior_topk --orientation_topk 4
 ```
 
-### UAV-VisLoc `same-area-paper7` main table
+### Historical UAV-VisLoc `same-area-paper7` block
+
+This block is kept only for archival reproducibility.
+Do **not** refresh or prioritize it unless the user explicitly asks for
+`same-area-paper7` again.
 
 Use retrieval checkpoint:
 
@@ -2260,17 +2302,18 @@ WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_gta.py \
   --with_match --loftr --no_rotate
 ```
 
-### UAV-VisLoc `same-area-paper7` LoFTR baseline
+### UAV-VisLoc compact `03/04` LoFTR baseline
 
 ```bash
 WANDB_MODE=disabled /home/lcy/miniconda3/envs/gtauav/bin/python eval_visloc.py \
   --data_root ./data/UAV_VisLoc_dataset \
-  --test_pairs_meta_file same-area-paper7-drone2sate-test.json \
+  --test_pairs_meta_file same-area-drone2sate-test.json \
   --test_mode pos \
   --query_mode D2S \
   --model vit_base_patch16_rope_reg1_gap_256.sbb_in1k \
-  --checkpoint_start ./work_dir/visloc/vit_base_patch16_rope_reg1_gap_256.sbb_in1k/0409152642/weights_e10_0.6527.pth \
-  --with_match --loftr --ignore_yaw --num_workers 0
+  --checkpoint_start ./pretrained/visloc/vit_base_eva_visloc_same_area_0407.pth \
+  --with_match --loftr --ignore_yaw --num_workers 0 \
+  --loftr_min_confidence 0.2
 ```
 
 

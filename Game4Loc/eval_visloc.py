@@ -116,6 +116,7 @@ class Configuration:
     sparse_ransac_reproj_threshold: float = 20.0
     sparse_min_inliers: int = 15
     sparse_min_inlier_ratio: float = 0.001
+    loftr_min_confidence: float = 0.2
     sparse_save_final_vis: bool = True
     angle_experiment: bool = False
     orientation_checkpoint: str = ""
@@ -241,6 +242,13 @@ def eval_script(config):
             logger.info("VisLoc 角度实验日志: %s", "开启" if config.angle_experiment else "关闭")
             if config.use_yaw and config.rotate <= 0:
                 logger.info("当前 rotate<=0，将执行 yaw-only 对齐，不再额外做旋转搜索")
+        elif config.match_mode == "loftr":
+            logger.info(
+                "VisLoc LoFTR 质量门槛: min_confidence=%.3f min_inliers=%d min_inlier_ratio=%.6f",
+                float(config.loftr_min_confidence),
+                int(config.sparse_min_inliers),
+                float(config.sparse_min_inlier_ratio),
+            )
     log_config(logger, config)
 
     wandb_run = None
@@ -425,6 +433,7 @@ def eval_script(config):
             sparse_ransac_reproj_threshold=config.sparse_ransac_reproj_threshold,
             sparse_min_inliers=config.sparse_min_inliers,
             sparse_min_inlier_ratio=config.sparse_min_inlier_ratio,
+            loftr_min_confidence=config.loftr_min_confidence,
             sparse_save_final_vis=config.sparse_save_final_vis,
             angle_experiment=effective_angle_experiment,
             orientation_checkpoint=config.orientation_checkpoint,
@@ -491,6 +500,7 @@ def parse_args():
     parser.add_argument("--sparse_ransac_reproj_threshold", type=float, default=20.0, help="Sparse homography RANSAC reprojection threshold.")
     parser.add_argument("--sparse_min_inliers", type=int, default=15, help="Minimum sparse inliers required to keep the estimated homography.")
     parser.add_argument("--sparse_min_inlier_ratio", type=float, default=0.001, help="Minimum sparse inlier ratio required to keep the estimated homography.")
+    parser.add_argument("--loftr_min_confidence", type=float, default=0.2, help="Minimum LoFTR match confidence required before homography estimation.")
     parser.add_argument("--sparse_save_final_vis", type=parse_bool, nargs="?", const=True, default=True, help="Save final sparse match visualizations. Default is True. Use '--sparse_save_final_vis False' to disable.")
     parser.add_argument("--angle_experiment", action="store_true", help="Log detailed per-angle sparse matching results for each VisLoc sample")
     parser.add_argument("--orientation_checkpoint", type=str, default="", help="Checkpoint path for the visual orientation posterior head")
@@ -548,6 +558,7 @@ if __name__ == "__main__":
     config.sparse_ransac_reproj_threshold = float(args.sparse_ransac_reproj_threshold)
     config.sparse_min_inliers = int(args.sparse_min_inliers)
     config.sparse_min_inlier_ratio = float(args.sparse_min_inlier_ratio)
+    config.loftr_min_confidence = float(args.loftr_min_confidence)
     config.sparse_save_final_vis = bool(args.sparse_save_final_vis)
     config.angle_experiment = args.angle_experiment
     config.orientation_checkpoint = args.orientation_checkpoint
