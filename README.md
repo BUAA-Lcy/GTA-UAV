@@ -1,54 +1,4 @@
-<!-- PROJECT LOGO -->
-<p align="center">
 
-  <h3 align="center">Game4Loc: A UAV Geo-Localization Benchmark from Game Data</h3>
-
-</p>
-
-<h5 align="center">
-  If you like our project, please give us a star ⭐️ for the continuous updates.
-</h5>
-
-<p align="center">
-  By <a href="https://yux1angji.github.io/" target='_blank'>Yuxiang Ji*</a>,&nbsp;
-  Boyong He*,&nbsp; Zhuoyue Tan,&nbsp; Liaoni Wu
-</p>
-
-<p align="center">
-  <img src="resources/trajectory_demo_compress.gif" alt="Demo">
-  <br>
-  <i>
-  Localization in flight trajectory after pre-trained on GTA-UAV dataset.
-  </i>
-</p>
-
-<p align="center">
-  <a href="https://yux1angji.github.io/game4loc/"><strong>[Project Page]</strong></a> |
-  <a href="https://arxiv.org/abs/2409.16925"><strong>[Arxiv]</strong></a>
-</p>
-
-- [x] Part I: LR Dataset
-- [x] Part II: Train and Test
-- [x] Part III: Pre-trained Checkpoints
-- [x] Part IV: HR Dataset and Supplementary
-
-## <a id="news"></a> 🔥 News
-
-- [Oct 20, 2025]: Bug fix for data angle calculation ⚠️
-- [Dec 10, 2024]: Game4Loc is accepted by AAAI'25 🎉
-- [Sep 28, 2024]: Official GTA-UAV dataset release 🚧
-
-## <a id="table-of-contents"></a> 📚 Table of contents
-
-- [Dataset Highlights](#dataset-highlights)
-- [Dataset Access](#dataset-access)
-- [Dataset Structure](#dataset-structure)
-- [Train and Test](#train-and-test)
-- [More Features](#more-features)
-- [Pre-trained Checkpoints](#pre-trained-checkpoints)
-- [License](#license)
-- [Acknowledgments](#acknowledgments)
-- [Citation](#citation)
 
 
 ## <a id="dataset-highlights"></a> 🌟 Dataset Highlights
@@ -224,25 +174,3 @@ The pre-trained models (two version: cross-area/same-area) are available at [Hug
 
 ## <a id="license"></a> 🎫 License
 This project is licensed under the [Apache 2.0 license](LICENSE).
-
-## <a id="acknowledgments"></a> 🙏 Acknowledgments 
-This work draws inspiration from the following code as references. We extend our gratitude to these remarkable contributions:
-
-- [Sample4Geo](https://github.com/Skyy93/Sample4Geo)
-- [DeepGTA](https://github.com/David0tt/DeepGTAV)
-- [GTA-V-Wolrd-Map](https://github.com/Flamm64/GTA-V-World-Map)
-- [GIM](https://github.com/xuelunshen/gim/)
-
-## <a id="citation"></a> 📌 Citation
-If you find our repository useful for your research, please consider citing our paper:
-```bibtex
-@inproceedings{ji2025game4loc,
-  title={Game4loc: A uav geo-localization benchmark from game data},
-  author={Ji, Yuxiang and He, Boyong and Tan, Zhuoyue and Wu, Liaoni},
-  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
-  volume={39},
-  number={4},
-  pages={3913--3921},
-  year={2025}
-}
-```
